@@ -167,6 +167,25 @@ pub struct FunctionLikeMetadata {
     /// from `Mago\AvailableSince` / `Mago\AvailableUntil` attributes during
     /// scanning.
     pub version_constraint: VersionConstraint,
+
+    /// Hints about return expressions that could not be resolved during scanning.
+    /// These are resolved during the population phase when the full codebase is available.
+    #[serde(default)]
+    pub return_expression_hints: Vec<ReturnExpressionHint>,
+}
+
+/// A simplified representation of a return expression that can be resolved after scanning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReturnExpressionHint {
+    /// `return $this->method(...);`
+    InstanceMethodCall { class: Atom, method: Atom },
+    /// `return static::method(...)` or `return self::method(...)`
+    StaticMethodCall { class: Atom, method: Atom },
+    /// `return globalFunction(...);`
+    FunctionCall { function: Atom },
+    /// A chain of method calls: `return $this->a()->b()->c();`
+    /// Stored as (class_of_first_receiver, [method1, method2, ...])
+    MethodChain { receiver_class: Atom, methods: Box<[Atom]> },
 }
 
 impl FunctionLikeKind {
@@ -233,6 +252,7 @@ impl FunctionLikeMetadata {
             has_docblock: false,
             issues: vec![],
             version_constraint: VersionConstraint::unconstrained(),
+            return_expression_hints: vec![],
         }
     }
 

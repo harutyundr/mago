@@ -1564,5 +1564,6 @@ fn create_enum_method(
         has_docblock: false,
         flags: MetadataFlags::POPULATED,
         version_constraint: crate::metadata::version_constraint::VersionConstraint::unconstrained(),
+        return_expression_hints: vec![],
     }
 }
