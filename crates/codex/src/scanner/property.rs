@@ -147,6 +147,14 @@ pub fn scan_promoted_property<'arena>(
         }
     }
 
+    // If no explicit type is set (no type hint and no @var docblock),
+    // use the inferred type from the default value
+    if property_metadata.type_metadata.is_none() {
+        if let Some(default_type) = property_metadata.default_type_metadata.as_ref() {
+            property_metadata.set_type_metadata(Some(default_type.clone()));
+        }
+    }
+
     property_metadata
 }
 
@@ -248,11 +256,17 @@ pub fn scan_properties<'arena>(
                         scope,
                         class_like_metadata,
                     );
-
-                    metadata
-                } else {
-                    metadata
                 }
+
+                // If no explicit type is set (no type hint and no @var docblock),
+                // use the inferred type from the default value
+                if metadata.type_metadata.is_none() {
+                    if let Some(default_type) = metadata.default_type_metadata.as_ref() {
+                        metadata.set_type_metadata(Some(default_type.clone()));
+                    }
+                }
+
+                metadata
             })
             .collect(),
         Property::Hooked(hooked_property) => {
@@ -304,6 +318,14 @@ pub fn scan_properties<'arena>(
                     scope,
                     class_like_metadata,
                 );
+            }
+
+            // If no explicit type is set (no type hint and no @var docblock),
+            // use the inferred type from the default value
+            if metadata.type_metadata.is_none() {
+                if let Some(default_type) = metadata.default_type_metadata.as_ref() {
+                    metadata.set_type_metadata(Some(default_type.clone()));
+                }
             }
 
             for hook in &hooked_property.hook_list.hooks {

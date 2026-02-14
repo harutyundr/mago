@@ -17,6 +17,23 @@ use mago_syntax::ast::MethodBody;
 use mago_syntax::ast::ModifierSequenceExt;
 use mago_syntax::utils;
 
+use std::borrow::Cow;
+
+use mago_syntax::ast::Call;
+use mago_syntax::ast::ClassLikeMemberSelector;
+use mago_syntax::ast::Expression;
+use mago_syntax::ast::Identifier;
+use mago_syntax::ast::Literal;
+use mago_syntax::ast::Variable;
+
+use crate::metadata::function_like::ReturnExpressionHint;
+
+use crate::metadata::ttype::TypeMetadata;
+use crate::ttype::atomic::TAtomic;
+use crate::ttype::atomic::object::TObject;
+use crate::ttype::atomic::object::named::TNamedObject;
+use crate::ttype::union::TUnion;
+
 use crate::assertion::Assertion;
 use crate::issue::ScanningIssueKind;
 use crate::metadata::class_like::ClassLikeMetadata;
@@ -124,6 +141,28 @@ pub fn scan_method<'arena>(
         && class_like_metadata.name.as_str().eq_ignore_ascii_case("revolt\\eventloop\\suspension")
     {
         metadata.flags |= MetadataFlags::SUSPENDS_FIBER;
+    }
+
+    // Infer return type from method body when no explicit type is declared.
+    if metadata.return_type_metadata.is_none()
+        && let MethodBody::Concrete(block) = &method.body
+    {
+        // First try simple inference (literals, $this, new ClassName)
+        if let Some(inferred) = infer_return_type_from_block(block, Some(class_like_metadata.name), context) {
+            metadata.set_return_type_metadata(Some(TypeMetadata {
+                span,
+                type_union: inferred,
+                from_docblock: false,
+                inferred: true,
+            }));
+        } else {
+            // Store hints for resolution during population phase
+            metadata.return_expression_hints = collect_return_expression_hints(
+                block,
+                Some(class_like_metadata.name),
+                context,
+            );
+        }
     }
 
     metadata
@@ -775,4 +814,311 @@ fn parse_assertion_string(
     }
 
     assertions
+}
+
+/// Attempts to infer a return type from a block by examining all return statements.
+///
+/// Returns `Some(TUnion)` when every return expression maps to a recognizable type:
+/// - `return $this;`         → `static` (TNamedObject with is_this=true)
+/// - `return true;`/`false;` → `bool`
+/// - `return 123;`           → `int`
+/// - `return 1.5;`           → `float`
+/// - `return 'str';`         → `string`
+/// - `return null;`          → `null`
+///
+/// Returns `None` if the block has no returns or any return expression is too complex.
+fn infer_return_type_from_block<'arena>(
+    block: &mago_syntax::ast::Block<'_>,
+    classname: Option<Atom>,
+    context: &Context<'_, 'arena>,
+) -> Option<TUnion> {
+    let returns = utils::find_returns_in_block(block);
+    if returns.is_empty() {
+        return None;
+    }
+
+    let mut atomics: Vec<TAtomic> = Vec::new();
+
+    for ret in &returns {
+        // Skip returns without values (bare `return;`)
+        let Some(expr) = ret.value else {
+            continue;
+        };
+
+        // Try to infer the type; skip if we can't
+        let Some(atomic) = infer_atomic_from_expression(expr, classname, context) else {
+            continue;
+        };
+
+        // Avoid duplicates (e.g. multiple `return true;` / `return false;` → single `bool`)
+        if !atomics.iter().any(|existing| *existing == atomic) {
+            atomics.push(atomic);
+        }
+    }
+
+    if atomics.is_empty() {
+        return None;
+    }
+
+    Some(TUnion::new(Cow::Owned(atomics)))
+}
+
+/// Maps a simple expression to a TAtomic type, or None if too complex.
+fn infer_atomic_from_expression<'arena>(
+    expr: &Expression<'_>,
+    classname: Option<Atom>,
+    context: &Context<'_, 'arena>,
+) -> Option<TAtomic> {
+    use crate::ttype::shared;
+
+    match expr {
+        Expression::Variable(Variable::Direct(direct)) if direct.name.eq_ignore_ascii_case("$this") => {
+            let name = classname?;
+            let mut named = TNamedObject::new(name);
+            named.is_this = true;
+            Some(TAtomic::Object(TObject::Named(named)))
+        }
+        Expression::Literal(Literal::True(_) | Literal::False(_)) => Some(shared::BOOL_ATOMIC.clone()),
+        Expression::Literal(Literal::Integer(_)) => Some(shared::INT_ATOMIC.clone()),
+        Expression::Literal(Literal::Float(_)) => Some(shared::FLOAT_ATOMIC.clone()),
+        Expression::Literal(Literal::String(_)) => Some(shared::STRING_ATOMIC.clone()),
+        Expression::Literal(Literal::Null(_)) => Some(shared::NULL_ATOMIC.clone()),
+        Expression::Instantiation(instantiation) => {
+            // Handle: return new ClassName(...);
+            match &instantiation.class {
+                Expression::Identifier(Identifier::Local(local)) => {
+                    // Local identifier - resolve using context
+                    let resolved_name = context.resolved_names.get(&local.span);
+                    let class_atom = atom(resolved_name);
+                    Some(TAtomic::Object(TObject::Named(TNamedObject::new(class_atom))))
+                }
+                Expression::Identifier(Identifier::Qualified(qualified)) => {
+                    // Qualified name - use as-is
+                    let class_atom = atom(qualified.value);
+                    Some(TAtomic::Object(TObject::Named(TNamedObject::new(class_atom))))
+                }
+                Expression::Identifier(Identifier::FullyQualified(fully_qualified)) => {
+                    // Fully qualified name - use as-is
+                    let class_atom = atom(fully_qualified.value);
+                    Some(TAtomic::Object(TObject::Named(TNamedObject::new(class_atom))))
+                }
+                _ => None,
+            }
+        }
+        Expression::Call(_) => {
+            // Cannot resolve calls during scanning (no codebase access).
+            // Hints will be collected separately for populator resolution.
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Collects return expression hints from a method body for later resolution.
+/// These hints are used by the populator phase to infer return types from method calls.
+pub fn collect_return_expression_hints(
+    block: &mago_syntax::ast::Block<'_>,
+    current_classname: Option<Atom>,
+    context: &Context<'_, '_>,
+) -> Vec<ReturnExpressionHint> {
+    let returns = utils::find_returns_in_block(block);
+    if returns.is_empty() {
+        return vec![];
+    }
+
+    let mut hints: Vec<ReturnExpressionHint> = Vec::new();
+
+    for ret in &returns {
+        // Skip returns without values (bare `return;`)
+        let Some(expr) = ret.value else {
+            continue;
+        };
+
+        if let Some(hint) = extract_return_hint(expr, current_classname, context) {
+            if !hints.contains(&hint) {
+                hints.push(hint);
+            }
+        }
+    }
+
+    hints
+}
+
+/// Extracts a return expression hint from a single return expression.
+fn extract_return_hint(
+    expr: &Expression<'_>,
+    current_classname: Option<Atom>,
+    context: &Context<'_, '_>,
+) -> Option<ReturnExpressionHint> {
+    match expr {
+        Expression::Call(Call::Method(method_call)) => {
+            // Handle: return $this->method(...);
+            if let Expression::Variable(Variable::Direct(direct)) = &method_call.object {
+                if direct.name.eq_ignore_ascii_case("$this") {
+                    let class_name = current_classname?;
+                    let method_name = match &method_call.method {
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        _ => return None,
+                    };
+                    return Some(ReturnExpressionHint::InstanceMethodCall {
+                        class: class_name,
+                        method: method_name,
+                    });
+                }
+            }
+
+            // Handle: return $this->a()->b()->c() or $obj->a()->b()
+            // Try to extract a method chain starting from the receiver
+            if let Some((receiver_class, methods)) = extract_method_chain_from_expression(&method_call.object, current_classname, context) {
+                let method_name = match &method_call.method {
+                    ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                    _ => return None,
+                };
+                let mut all_methods = methods;
+                all_methods.push(method_name);
+                return Some(ReturnExpressionHint::MethodChain {
+                    receiver_class,
+                    methods: all_methods.into_boxed_slice(),
+                });
+            }
+
+            None
+        }
+        Expression::Call(Call::StaticMethod(static_call)) => {
+            // Check if this is the start of a chain: \XF::app()->language()
+            // First, try to extract a simple static method call
+            let (class_name, method_name) = match &static_call.class {
+                // self::method() or static::method()
+                Expression::Identifier(Identifier::Local(local))
+                    if local.value == "static" || local.value == "self" =>
+                {
+                    let class_name = current_classname?;
+                    let method_name = match &static_call.method {
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        _ => return None,
+                    };
+                    (class_name, method_name)
+                }
+                // ClassName::method()
+                Expression::Identifier(Identifier::Local(local)) => {
+                    let resolved_name = context.resolved_names.get(&local.span);
+                    let class_atom = ascii_lowercase_atom(resolved_name);
+                    let method_name = match &static_call.method {
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        _ => return None,
+                    };
+                    (class_atom, method_name)
+                }
+                Expression::Identifier(Identifier::Qualified(qualified)) => {
+                    let class_atom = ascii_lowercase_atom(qualified.value);
+                    let method_name = match &static_call.method {
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        _ => return None,
+                    };
+                    (class_atom, method_name)
+                }
+                Expression::Identifier(Identifier::FullyQualified(fully_qualified)) => {
+                    let value = fully_qualified.value;
+                    let stripped = if value.starts_with('\\') { &value[1..] } else { value };
+                    let class_atom = ascii_lowercase_atom(stripped);
+                    let method_name = match &static_call.method {
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        _ => return None,
+                    };
+                    (class_atom, method_name)
+                }
+                _ => return None,
+            };
+
+            Some(ReturnExpressionHint::StaticMethodCall {
+                class: class_name,
+                method: method_name,
+            })
+        }
+        Expression::Call(Call::Function(function_call)) => {
+            // Handle: return someFunction(...);
+            let function_name = match &function_call.function {
+                Expression::Identifier(Identifier::Local(local)) => {
+                    let resolved_name = context.resolved_names.get(&local.span);
+                    let stripped = if resolved_name.starts_with('\\') { &resolved_name[1..] } else { resolved_name };
+                    ascii_lowercase_atom(stripped)
+                }
+                Expression::Identifier(Identifier::Qualified(qualified)) => {
+                    let value = qualified.value;
+                    let stripped = if value.starts_with('\\') { &value[1..] } else { value };
+                    ascii_lowercase_atom(stripped)
+                }
+                Expression::Identifier(Identifier::FullyQualified(fully_qualified)) => {
+                    let value = fully_qualified.value;
+                    let stripped = if value.starts_with('\\') { &value[1..] } else { value };
+                    ascii_lowercase_atom(stripped)
+                }
+                _ => return None,
+            };
+
+            Some(ReturnExpressionHint::FunctionCall {
+                function: function_name,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Extracts a method chain from an expression, returning (starting_class, [methods]).
+/// For example, from `$this->a()->b()` returns (CurrentClass, ["a", "b"])
+fn extract_method_chain_from_expression(
+    expr: &Expression<'_>,
+    current_classname: Option<Atom>,
+    context: &Context<'_, '_>,
+) -> Option<(Atom, Vec<Atom>)> {
+    match expr {
+        Expression::Call(Call::Method(method_call)) => {
+            // Recursively extract from the receiver
+            if let Some((receiver_class, mut methods)) = extract_method_chain_from_expression(&method_call.object, current_classname, context) {
+                let method_name = match &method_call.method {
+                    ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                    _ => return None,
+                };
+                methods.push(method_name);
+                return Some((receiver_class, methods));
+            }
+            None
+        }
+        Expression::Call(Call::StaticMethod(static_call)) => {
+            // Static method call starts a chain
+            let (class_name, method_name) = match &static_call.class {
+                Expression::Identifier(Identifier::Local(local))
+                    if local.value == "static" || local.value == "self" =>
+                {
+                    (current_classname?, extract_method_name(&static_call.method)?)
+                }
+                Expression::Identifier(Identifier::Local(local)) => {
+                    let resolved_name = context.resolved_names.get(&local.span);
+                    (ascii_lowercase_atom(resolved_name), extract_method_name(&static_call.method)?)
+                }
+                Expression::Identifier(Identifier::Qualified(qualified)) => {
+                    (ascii_lowercase_atom(qualified.value), extract_method_name(&static_call.method)?)
+                }
+                Expression::Identifier(Identifier::FullyQualified(fully_qualified)) => {
+                    let value = fully_qualified.value;
+                    let stripped = if value.starts_with('\\') { &value[1..] } else { value };
+                    (ascii_lowercase_atom(stripped), extract_method_name(&static_call.method)?)
+                }
+                _ => return None,
+            };
+            Some((class_name, vec![method_name]))
+        }
+        Expression::Variable(Variable::Direct(direct)) if direct.name.eq_ignore_ascii_case("$this") => {
+            // $this is the receiver
+            Some((current_classname?, vec![]))
+        }
+        _ => None,
+    }
+}
+
+fn extract_method_name(selector: &ClassLikeMemberSelector) -> Option<Atom> {
+    match selector {
+        ClassLikeMemberSelector::Identifier(ident) => Some(ascii_lowercase_atom(ident.value)),
+        _ => None,
+    }
 }

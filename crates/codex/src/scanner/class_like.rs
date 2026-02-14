@@ -1508,6 +1508,7 @@ fn create_enum_from_method(enum_name: &str, enum_method_span: Span, backing_type
         if_false_assertions: Default::default(),
         has_docblock: false,
         flags: MetadataFlags::POPULATED,
+        return_expression_hints: vec![],
     }
 }
 
@@ -1564,6 +1565,7 @@ fn create_enum_try_from_method(enum_name: &str, enum_method_span: Span, backing_
         if_false_assertions: Default::default(),
         has_docblock: false,
         flags: MetadataFlags::POPULATED,
+        return_expression_hints: vec![],
     }
 }
 
@@ -1621,5 +1623,6 @@ fn create_enum_cases_method(enum_name: &str, enum_method_span: Span, has_cases: 
         if_false_assertions: Default::default(),
         has_docblock: false,
         flags: MetadataFlags::POPULATED,
+        return_expression_hints: vec![],
     }
 }
