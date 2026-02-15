@@ -9,8 +9,10 @@ use mago_atom::empty_atom;
 use crate::metadata::CodebaseMetadata;
 use crate::metadata::function_like::ReturnExpressionHint;
 use crate::metadata::ttype::TypeMetadata;
+use crate::ttype::TType;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::object::TObject;
+use crate::ttype::atomic::object::named::TNamedObject;
 use crate::ttype::atomic::reference::TReference;
 use crate::ttype::union::TUnion;
 
@@ -92,6 +94,11 @@ fn resolve_hints(
                 methods,
             } => {
                 if let Some(resolved) = resolve_method_chain(*receiver_class, methods, codebase, resolving) {
+                    collect_atomics(&resolved, &mut atomics);
+                }
+            }
+            ReturnExpressionHint::PropertyAccess { class, property } => {
+                if let Some(resolved) = resolve_property_type(*class, *property, codebase) {
                     collect_atomics(&resolved, &mut atomics);
                 }
             }
@@ -253,10 +260,65 @@ fn resolve_method_chain(
     None
 }
 
+fn resolve_property_type(
+    class: Atom,
+    property: Atom,
+    codebase: &CodebaseMetadata,
+) -> Option<TUnion> {
+    if let Some(class_meta) = codebase.class_likes.get(&class) {
+        if let Some(prop_meta) = class_meta.properties.get(&property) {
+            if let Some(type_meta) = &prop_meta.type_metadata {
+                return Some(type_meta.type_union.clone());
+            }
+        }
+        
+        for parent_class in &class_meta.all_parent_classes {
+            if let Some(parent_meta) = codebase.class_likes.get(parent_class) {
+                if let Some(prop_meta) = parent_meta.properties.get(&property) {
+                    if let Some(type_meta) = &prop_meta.type_metadata {
+                        return Some(type_meta.type_union.clone());
+                    }
+                }
+            }
+        }
+        
+        for trait_name in &class_meta.used_traits {
+            if let Some(trait_meta) = codebase.class_likes.get(trait_name) {
+                if let Some(prop_meta) = trait_meta.properties.get(&property) {
+                    if let Some(type_meta) = &prop_meta.type_metadata {
+                        return Some(type_meta.type_union.clone());
+                    }
+                }
+            }
+        }
+    }
+    
+    None
+}
+
 fn collect_atomics(union: &TUnion, atomics: &mut Vec<TAtomic>) {
     for atomic in union.types.iter() {
-        if !atomics.contains(atomic) {
-            atomics.push(atomic.clone());
+        // Resolve TReference::Symbol to TObject::Named so the analyzer sees concrete object types
+        // instead of unresolved references (which display as "unknown-ref(ClassName)").
+        // This is needed because resolve_return_expression_hints runs before class-like type
+        // population, so property/method return types may still contain TReference::Symbol.
+        let resolved = match atomic {
+            TAtomic::Reference(TReference::Symbol { name, parameters, intersection_types }) => {
+                let mut named = TNamedObject::new(*name);
+                if let Some(params) = parameters {
+                    named = named.with_type_parameters(Some(params.clone()));
+                }
+                if let Some(intersections) = intersection_types {
+                    for it in intersections {
+                        named.add_intersection_type(it.clone());
+                    }
+                }
+                TAtomic::Object(TObject::Named(named))
+            }
+            other => other.clone(),
+        };
+        if !atomics.contains(&resolved) {
+            atomics.push(resolved);
         }
     }
 }
