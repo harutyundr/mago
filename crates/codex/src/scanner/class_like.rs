@@ -1562,6 +1562,7 @@ fn create_enum_method(
         assertions_inferred: false,
         globals_accessed: WordSet::default(),
         has_docblock: false,
+        uses_func_get_args: false,
         flags: MetadataFlags::POPULATED,
         version_constraint: crate::metadata::version_constraint::VersionConstraint::unconstrained(),
         return_expression_hints: vec![],

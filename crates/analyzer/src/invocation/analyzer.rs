@@ -1152,6 +1152,7 @@ where
             .is_some_and(|parameter| parameter.is_variadic())
             && number_of_provided_parameters > max_params
             && max_params > 0)
+        && !invocation.target.get_function_like_metadata().is_some_and(|m| m.uses_func_get_args)
     {
         let target_name_str = invocation.target.guess_name(context);
         let first_extra_arg_span = invocation
