@@ -565,8 +565,11 @@ fn check_parent_constructor_initializes(
             return false;
         };
 
-        if parent_meta.declaring_method_ids.contains_key(&atom("__construct")) {
-            let method_key = (*parent_name, atom("__construct"));
+        if let Some(constructor_method_id) = parent_meta.declaring_method_ids.get(&atom("__construct")) {
+            // Use the actual declaring class of the constructor, which may differ from
+            // the parent being checked (e.g., constructor inherited from a grandparent).
+            let constructor_declaring_class = *constructor_method_id.get_class_name();
+            let method_key = (constructor_declaring_class, atom("__construct"));
             let constructor_initialized = artifacts.method_initialized_properties.get(&method_key);
 
             let all_initialized = uninitialized_properties.iter().all(|(prop_name, _)| {
@@ -580,9 +583,13 @@ fn check_parent_constructor_initializes(
                     return true;
                 }
 
+                // When artifacts are not available (cross-file analysis), trust that
+                // a constructor initializes properties declared in its own class.
                 if constructor_initialized.is_none() {
                     let prop_declaring_class = class_like_metadata.declaring_property_ids.get(prop_name).copied();
-                    if prop_declaring_class == Some(*parent_name) {
+                    if prop_declaring_class == Some(*parent_name)
+                        || prop_declaring_class == Some(constructor_declaring_class)
+                    {
                         return true;
                     }
                 }
