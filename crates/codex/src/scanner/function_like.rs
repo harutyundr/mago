@@ -19,15 +19,18 @@ use mago_syntax::utils;
 
 use std::borrow::Cow;
 
+use mago_syntax::ast::Access;
 use mago_syntax::ast::Assignment;
 use mago_syntax::ast::AssignmentOperator;
 use mago_syntax::ast::Block;
 use mago_syntax::ast::Call;
 use mago_syntax::ast::ClassLikeMemberSelector;
+use mago_syntax::ast::DirectVariable;
 use mago_syntax::ast::Expression;
 use mago_syntax::ast::ExpressionStatement;
 use mago_syntax::ast::Identifier;
 use mago_syntax::ast::Literal;
+use mago_syntax::ast::PropertyAccess;
 use mago_syntax::ast::Statement;
 use mago_syntax::ast::Variable;
 
@@ -980,6 +983,26 @@ fn extract_return_hint(
             let block = block?;
             let assigned_expr = find_last_assignment_in_block(block, direct.name)?;
             extract_return_hint(assigned_expr, current_classname, context, None)
+        }
+        Expression::Access(Access::Property(PropertyAccess { object, property, .. })) => {
+            if let Expression::Variable(Variable::Direct(DirectVariable { name, .. })) = object {
+                if name.eq_ignore_ascii_case("$this") {
+                    let class_name = current_classname?;
+                    let property_name = match property {
+                        ClassLikeMemberSelector::Identifier(ident) => {
+                            // Property names in metadata include the '$' prefix
+                            let name_with_dollar = format!("${}", ident.value);
+                            ascii_lowercase_atom(&name_with_dollar)
+                        },
+                        _ => return None,
+                    };
+                    return Some(ReturnExpressionHint::PropertyAccess {
+                        class: class_name,
+                        property: property_name,
+                    });
+                }
+            }
+            None
         }
         Expression::Call(Call::Method(method_call)) => {
             // Handle: return $this->method(...);

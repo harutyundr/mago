@@ -157,6 +157,8 @@ pub enum ReturnExpressionHint {
     /// A chain of method calls: `return $this->a()->b()->c();`
     /// Stored as (class_of_first_receiver, [method1, method2, ...])
     MethodChain { receiver_class: Atom, methods: Box<[Atom]> },
+    /// `return $this->property;` or indirectly via `$var = $this->property; return $var;`
+    PropertyAccess { class: Atom, property: Atom },
 }
 
 impl FunctionLikeKind {
