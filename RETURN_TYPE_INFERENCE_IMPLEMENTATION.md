@@ -553,3 +553,40 @@ cd /Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi
 ```
 
 All should return zero results for type inference issues with XF classes.
+
+## Bug Fixes (Feb 15, 2026 - Part 2)
+
+### Fix 1: Static/Self/Parent Keyword AST Handling
+
+**Problem**: Static method calls using `static::`, `self::`, or `parent::` were not generating return expression hints. Methods like `\XF::phrase()` (which internally calls `static::language()->phrase(...)`) returned `mixed`.
+
+**Root Cause**: The PHP parser represents `static`, `self`, and `parent` keywords as dedicated AST expression types (`Expression::Static`, `Expression::Self_`, `Expression::Parent`), NOT as `Expression::Identifier(Identifier::Local("static"))`. The hint extraction code only handled the `Identifier::Local` case, which never matched.
+
+**Fix Locations**:
+- `mago/crates/codex/src/scanner/function_like.rs` — `extract_return_hint()` (StaticMethodCall case)
+- `mago/crates/codex/src/scanner/function_like.rs` — `extract_method_chain_from_expression()` (StaticMethodCall case)
+
+**Changes**: Added `Expression::Static(_)`, `Expression::Self_(_)`, and `Expression::Parent(_)` match arms in both functions, mapping them to `current_classname` (same behavior as the old `Identifier::Local` guard that checked for "static"/"self").
+
+### Fix 2: Property Name Case Sensitivity
+
+**Problem**: `$addOn->getInstalledAddOn()` returned `mixed` even though the method body is `return $this->installedAddOn;` and the property has a `@var \XF\Entity\AddOn` docblock.
+
+**Root Cause**: Property names in hints were lowercased via `ascii_lowercase_atom()` (e.g., `$installedaddon`), but property metadata stores them with original casing (`$installedAddOn`). PHP property names are **case-sensitive**, so the lookup failed.
+
+**Fix Location**: `mago/crates/codex/src/scanner/function_like.rs` — `extract_return_hint()` (PropertyAccess case, line ~954)
+
+**Change**: Replaced `ascii_lowercase_atom(&name_with_dollar)` with `atom(&name_with_dollar)` to preserve original property name casing.
+
+### Impact
+
+- **Before**: 41 issues (11 errors) in full project
+- **After**: 13 issues (3 errors, 10 warnings) — **28 fewer issues**
+- **ErrorLog.php**: 0 issues (was 1 error) ✅
+- **IntegrationTest.php**: 0 issues (was 2 errors + 1 warning) ✅
+- **Zero regressions** ✅
+
+### Key Learnings
+
+1. **AST keyword representation**: PHP keywords like `static`, `self`, `parent` are parsed as dedicated expression types, not identifiers. Always check the actual AST representation.
+2. **Case sensitivity matters**: Class/method names are case-insensitive in PHP (use `ascii_lowercase_atom`), but property names are case-sensitive (use `atom`).

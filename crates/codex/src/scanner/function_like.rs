@@ -999,9 +999,10 @@ fn extract_return_hint(
                     let class_name = current_classname?;
                     let property_name = match property {
                         ClassLikeMemberSelector::Identifier(ident) => {
-                            // Property names in metadata include the '$' prefix
+                            // Property names in metadata include the '$' prefix.
+                            // Use atom() not ascii_lowercase_atom() because PHP property names are case-sensitive.
                             let name_with_dollar = format!("${}", ident.value);
-                            ascii_lowercase_atom(&name_with_dollar)
+                            atom(&name_with_dollar)
                         },
                         _ => return None,
                     };
@@ -1050,10 +1051,26 @@ fn extract_return_hint(
             // Check if this is the start of a chain: \XF::app()->language()
             // First, try to extract a simple static method call
             let (class_name, method_name) = match &static_call.class {
-                // self::method() or static::method()
-                Expression::Identifier(Identifier::Local(local))
-                    if local.value == "static" || local.value == "self" =>
-                {
+                // static::method() - parsed as Expression::Static, not Identifier
+                Expression::Static(_) => {
+                    let class_name = current_classname?;
+                    let method_name = match &static_call.method {
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        _ => return None,
+                    };
+                    (class_name, method_name)
+                }
+                // self::method() - parsed as Expression::Self_, not Identifier
+                Expression::Self_(_) => {
+                    let class_name = current_classname?;
+                    let method_name = match &static_call.method {
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        _ => return None,
+                    };
+                    (class_name, method_name)
+                }
+                // parent::method()
+                Expression::Parent(_) => {
                     let class_name = current_classname?;
                     let method_name = match &static_call.method {
                         ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
@@ -1149,9 +1166,16 @@ fn extract_method_chain_from_expression(
         Expression::Call(Call::StaticMethod(static_call)) => {
             // Static method call starts a chain
             let (class_name, method_name) = match &static_call.class {
-                Expression::Identifier(Identifier::Local(local))
-                    if local.value == "static" || local.value == "self" =>
-                {
+                // static::method() - parsed as Expression::Static
+                Expression::Static(_) => {
+                    (current_classname?, extract_method_name(&static_call.method)?)
+                }
+                // self::method() - parsed as Expression::Self_
+                Expression::Self_(_) => {
+                    (current_classname?, extract_method_name(&static_call.method)?)
+                }
+                // parent::method()
+                Expression::Parent(_) => {
                     (current_classname?, extract_method_name(&static_call.method)?)
                 }
                 Expression::Identifier(Identifier::Local(local)) => {
