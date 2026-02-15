@@ -19,11 +19,16 @@ use mago_syntax::utils;
 
 use std::borrow::Cow;
 
+use mago_syntax::ast::Assignment;
+use mago_syntax::ast::AssignmentOperator;
+use mago_syntax::ast::Block;
 use mago_syntax::ast::Call;
 use mago_syntax::ast::ClassLikeMemberSelector;
 use mago_syntax::ast::Expression;
+use mago_syntax::ast::ExpressionStatement;
 use mago_syntax::ast::Identifier;
 use mago_syntax::ast::Literal;
+use mago_syntax::ast::Statement;
 use mago_syntax::ast::Variable;
 
 use crate::metadata::function_like::ReturnExpressionHint;
@@ -828,7 +833,7 @@ fn parse_assertion_string(
 ///
 /// Returns `None` if the block has no returns or any return expression is too complex.
 fn infer_return_type_from_block<'arena>(
-    block: &mago_syntax::ast::Block<'_>,
+    block: &Block<'_>,
     classname: Option<Atom>,
     context: &Context<'_, 'arena>,
 ) -> Option<TUnion> {
@@ -840,17 +845,14 @@ fn infer_return_type_from_block<'arena>(
     let mut atomics: Vec<TAtomic> = Vec::new();
 
     for ret in &returns {
-        // Skip returns without values (bare `return;`)
         let Some(expr) = ret.value else {
             continue;
         };
 
-        // Try to infer the type; skip if we can't
-        let Some(atomic) = infer_atomic_from_expression(expr, classname, context) else {
+        let Some(atomic) = infer_atomic_from_expression(expr, classname, context, Some(block)) else {
             continue;
         };
 
-        // Avoid duplicates (e.g. multiple `return true;` / `return false;` → single `bool`)
         if !atomics.iter().any(|existing| *existing == atomic) {
             atomics.push(atomic);
         }
@@ -868,6 +870,7 @@ fn infer_atomic_from_expression<'arena>(
     expr: &Expression<'_>,
     classname: Option<Atom>,
     context: &Context<'_, 'arena>,
+    block: Option<&Block<'_>>,
 ) -> Option<TAtomic> {
     use crate::ttype::shared;
 
@@ -878,27 +881,28 @@ fn infer_atomic_from_expression<'arena>(
             named.is_this = true;
             Some(TAtomic::Object(TObject::Named(named)))
         }
+        Expression::Variable(Variable::Direct(direct)) => {
+            let block = block?;
+            let assigned_expr = find_last_assignment_in_block(block, direct.name)?;
+            infer_atomic_from_expression(assigned_expr, classname, context, None)
+        }
         Expression::Literal(Literal::True(_) | Literal::False(_)) => Some(shared::BOOL_ATOMIC.clone()),
         Expression::Literal(Literal::Integer(_)) => Some(shared::INT_ATOMIC.clone()),
         Expression::Literal(Literal::Float(_)) => Some(shared::FLOAT_ATOMIC.clone()),
         Expression::Literal(Literal::String(_)) => Some(shared::STRING_ATOMIC.clone()),
         Expression::Literal(Literal::Null(_)) => Some(shared::NULL_ATOMIC.clone()),
         Expression::Instantiation(instantiation) => {
-            // Handle: return new ClassName(...);
             match &instantiation.class {
                 Expression::Identifier(Identifier::Local(local)) => {
-                    // Local identifier - resolve using context
                     let resolved_name = context.resolved_names.get(&local.span);
                     let class_atom = atom(resolved_name);
                     Some(TAtomic::Object(TObject::Named(TNamedObject::new(class_atom))))
                 }
                 Expression::Identifier(Identifier::Qualified(qualified)) => {
-                    // Qualified name - use as-is
                     let class_atom = atom(qualified.value);
                     Some(TAtomic::Object(TObject::Named(TNamedObject::new(class_atom))))
                 }
                 Expression::Identifier(Identifier::FullyQualified(fully_qualified)) => {
-                    // Fully qualified name - use as-is
                     let class_atom = atom(fully_qualified.value);
                     Some(TAtomic::Object(TObject::Named(TNamedObject::new(class_atom))))
                 }
@@ -906,12 +910,33 @@ fn infer_atomic_from_expression<'arena>(
             }
         }
         Expression::Call(_) => {
-            // Cannot resolve calls during scanning (no codebase access).
-            // Hints will be collected separately for populator resolution.
             None
         }
         _ => None,
     }
+}
+
+fn find_last_assignment_in_block<'a, 'arena>(
+    block: &'a Block<'arena>,
+    var_name: &str,
+) -> Option<&'a Expression<'arena>> {
+    let mut last_rhs: Option<&'a Expression<'arena>> = None;
+    for stmt in block.statements.iter() {
+        if let Statement::Expression(ExpressionStatement {
+            expression: Expression::Assignment(Assignment {
+                lhs: Expression::Variable(Variable::Direct(direct)),
+                operator: AssignmentOperator::Assign(_),
+                rhs,
+                ..
+            }),
+            ..
+        }) = stmt {
+            if direct.name.eq_ignore_ascii_case(var_name) {
+                last_rhs = Some(rhs);
+            }
+        }
+    }
+    last_rhs
 }
 
 /// Collects return expression hints from a method body for later resolution.
@@ -929,12 +954,11 @@ pub fn collect_return_expression_hints(
     let mut hints: Vec<ReturnExpressionHint> = Vec::new();
 
     for ret in &returns {
-        // Skip returns without values (bare `return;`)
         let Some(expr) = ret.value else {
             continue;
         };
 
-        if let Some(hint) = extract_return_hint(expr, current_classname, context) {
+        if let Some(hint) = extract_return_hint(expr, current_classname, context, Some(block)) {
             if !hints.contains(&hint) {
                 hints.push(hint);
             }
@@ -949,8 +973,14 @@ fn extract_return_hint(
     expr: &Expression<'_>,
     current_classname: Option<Atom>,
     context: &Context<'_, '_>,
+    block: Option<&Block<'_>>,
 ) -> Option<ReturnExpressionHint> {
     match expr {
+        Expression::Variable(Variable::Direct(direct)) if !direct.name.eq_ignore_ascii_case("$this") => {
+            let block = block?;
+            let assigned_expr = find_last_assignment_in_block(block, direct.name)?;
+            extract_return_hint(assigned_expr, current_classname, context, None)
+        }
         Expression::Call(Call::Method(method_call)) => {
             // Handle: return $this->method(...);
             if let Expression::Variable(Variable::Direct(direct)) = &method_call.object {
