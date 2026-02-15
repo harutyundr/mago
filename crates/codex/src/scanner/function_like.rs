@@ -20,6 +20,7 @@ use mago_syntax::utils;
 use std::borrow::Cow;
 
 use mago_syntax::ast::Access;
+use mago_syntax::ast::Argument;
 use mago_syntax::ast::Assignment;
 use mago_syntax::ast::AssignmentOperator;
 use mago_syntax::ast::Block;
@@ -132,6 +133,10 @@ pub fn scan_method<'arena>(
         if utils::block_has_throws(block) {
             metadata.flags |= MetadataFlags::HAS_THROW;
         }
+
+        if block_has_func_get_args(block) {
+            metadata.uses_func_get_args = true;
+        }
     } else {
         method_metadata.is_abstract = true;
     }
@@ -222,6 +227,10 @@ pub fn scan_function<'arena>(
     metadata.attributes = scan_attribute_lists(&function.attribute_lists, context);
     metadata.type_resolution_context =
         if type_resolution_context.is_empty() { None } else { Some(type_resolution_context) };
+
+    if block_has_func_get_args(&function.body) {
+        metadata.uses_func_get_args = true;
+    }
 
     if let Some(return_hint) = function.return_type_hint.as_ref() {
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
@@ -1173,5 +1182,95 @@ fn extract_method_name(selector: &ClassLikeMemberSelector) -> Option<Atom> {
     match selector {
         ClassLikeMemberSelector::Identifier(ident) => Some(ascii_lowercase_atom(ident.value)),
         _ => None,
+    }
+}
+
+fn argument_value<'a, 'arena>(arg: &'a Argument<'arena>) -> &'a Expression<'arena> {
+    match arg {
+        Argument::Positional(p) => p.value,
+        Argument::Named(n) => n.value,
+    }
+}
+
+/// Check if a block contains calls to `func_get_args()`, `func_get_arg()`, or `func_num_args()`.
+/// These functions indicate the method implicitly accepts variadic arguments.
+fn block_has_func_get_args(block: &Block) -> bool {
+    for statement in &block.statements {
+        if statement_has_func_get_args(statement) {
+            return true;
+        }
+    }
+    false
+}
+
+fn statement_has_func_get_args(statement: &Statement) -> bool {
+    match statement {
+        Statement::Expression(expr_stmt) => expression_has_func_get_args(expr_stmt.expression),
+        Statement::Return(ret) => ret.value.as_ref().is_some_and(|e| expression_has_func_get_args(e)),
+        Statement::Block(block) => block_has_func_get_args(block),
+        Statement::If(r#if) => match &r#if.body {
+            mago_syntax::ast::IfBody::Statement(body) => {
+                statement_has_func_get_args(body.statement)
+                    || body.else_if_clauses.iter().any(|c| statement_has_func_get_args(c.statement))
+                    || body.else_clause.as_ref().is_some_and(|c| statement_has_func_get_args(c.statement))
+            }
+            mago_syntax::ast::IfBody::ColonDelimited(body) => {
+                body.statements.iter().any(statement_has_func_get_args)
+                    || body.else_if_clauses.iter().any(|c| c.statements.iter().any(statement_has_func_get_args))
+                    || body.else_clause.as_ref().is_some_and(|c| c.statements.iter().any(statement_has_func_get_args))
+            }
+        },
+        Statement::Try(r#try) => {
+            r#try.block.statements.iter().any(statement_has_func_get_args)
+                || r#try.catch_clauses.iter().any(|c| block_has_func_get_args(&c.block))
+                || r#try.finally_clause.as_ref().is_some_and(|f| block_has_func_get_args(&f.block))
+        }
+        Statement::Foreach(foreach) => match &foreach.body {
+            mago_syntax::ast::ForeachBody::Statement(s) => statement_has_func_get_args(s),
+            mago_syntax::ast::ForeachBody::ColonDelimited(b) => b.statements.iter().any(statement_has_func_get_args),
+        },
+        _ => false,
+    }
+}
+
+fn expression_has_func_get_args(expression: &Expression) -> bool {
+    match expression {
+        Expression::Call(Call::Function(func_call)) => {
+            if let Expression::Identifier(ident) = func_call.function {
+                let name = ident.value();
+                if name.eq_ignore_ascii_case("func_get_args")
+                    || name.eq_ignore_ascii_case("func_get_arg")
+                    || name.eq_ignore_ascii_case("func_num_args")
+                {
+                    return true;
+                }
+            }
+            // Check arguments recursively
+            func_call.argument_list.arguments.iter().any(|arg| {
+                expression_has_func_get_args(argument_value(arg))
+            })
+        }
+        Expression::Call(Call::Method(method_call)) => {
+            method_call.argument_list.arguments.iter().any(|arg| {
+                expression_has_func_get_args(argument_value(arg))
+            })
+        }
+        Expression::Call(Call::StaticMethod(static_call)) => {
+            static_call.argument_list.arguments.iter().any(|arg| {
+                expression_has_func_get_args(argument_value(arg))
+            })
+        }
+        Expression::Assignment(assignment) => {
+            expression_has_func_get_args(assignment.lhs) || expression_has_func_get_args(assignment.rhs)
+        }
+        Expression::Parenthesized(p) => expression_has_func_get_args(p.expression),
+        Expression::Binary(op) => expression_has_func_get_args(op.lhs) || expression_has_func_get_args(op.rhs),
+        Expression::UnaryPrefix(op) => expression_has_func_get_args(op.operand),
+        Expression::Conditional(cond) => {
+            expression_has_func_get_args(cond.condition)
+                || cond.then.as_ref().is_some_and(|e| expression_has_func_get_args(e))
+                || expression_has_func_get_args(cond.r#else)
+        }
+        _ => false,
     }
 }

@@ -791,10 +791,11 @@ pub fn analyze_invocation<'ctx, 'arena>(
 
         issue = issue.with_help("Provide all required arguments.");
         context.collector.report_with_code(IssueCode::TooFewArguments, issue);
-    } else if has_too_many_arguments
+    } else if (has_too_many_arguments
         || (!parameter_refs.last().is_some_and(super::InvocationTargetParameter::is_variadic)
             && number_of_provided_parameters > max_params
-            && max_params > 0)
+            && max_params > 0))
+        && !invocation.target.get_function_like_metadata().is_some_and(|m| m.uses_func_get_args)
     {
         let first_extra_arg_span = invocation
             .arguments_source

@@ -139,6 +139,12 @@ pub struct FunctionLikeMetadata {
 
     pub flags: MetadataFlags,
 
+    /// Whether the function body calls `func_get_args()`, `func_get_arg()`, or `func_num_args()`.
+    /// When true, the function implicitly accepts variadic arguments even if the signature
+    /// does not declare them.
+    #[serde(default)]
+    pub uses_func_get_args: bool,
+
     /// Hints about return expressions that could not be resolved during scanning.
     /// These are resolved during the population phase when the full codebase is available.
     #[serde(default)]
@@ -217,6 +223,7 @@ impl FunctionLikeMetadata {
             if_true_assertions: BTreeMap::new(),
             if_false_assertions: BTreeMap::new(),
             has_docblock: false,
+            uses_func_get_args: false,
             issues: vec![],
             return_expression_hints: vec![],
         }

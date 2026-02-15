@@ -365,3 +365,191 @@ Potential areas for improvement:
 - Type system: `mago/crates/codex/src/ttype/`
 - Metadata: `mago/crates/codex/src/metadata/`
 - Pipeline: `mago/crates/orchestrator/src/service/pipeline.rs`
+
+# Mago Type Inference Fix - Summary
+
+## Date: February 15, 2026
+
+## Problem
+
+Property-based return type inference was failing, causing `unknown-ref(XF\Entity\Post)` errors throughout the codebase. Methods like `getPost()` that return `$this->property` were being typed as `unknown-ref` instead of concrete object types.
+
+### Example Error
+```
+error[invalid-property-access]: Attempting to access a property on a non-object type (`unknown-ref(XF\Entity\Post)`).
+   ┌─ upload/src/addons/BHW/OriginalityApi/XF/Service/Post/PreparerService.php:56:26
+   │
+56 │         $thread = $post->Thread;
+   │                   -----  ^^^^^^ Cannot access property here
+   │                   │
+   │                   This expression has type `unknown-ref(XF\Entity\Post)` 
+```
+
+---
+
+## Root Cause
+
+The `resolve_return_expression_hints` function in the populate phase runs **before** class-like type population. At that point, property types stored in metadata are still `TReference::Symbol` (unresolved references), not `TObject::Named` (concrete object types).
+
+### Pipeline Order Issue
+1. Line 136-167: Function-like signatures populated
+2. **Line 170: `resolve_return_expression_hints` runs** ← Our code runs here
+3. Line 184-200: Class-like types populated (TReference → TObject conversion)
+
+When our hint resolution reads property types, they're still unresolved `TReference::Symbol` types.
+
+---
+
+## Solution
+
+Modified `collect_atomics()` function in `return_hints.rs` to convert `TReference::Symbol` to `TObject::Named` when assembling resolved return types. This is the single funnel point where all resolved types flow through.
+
+### Code Change
+
+**File:** `mago/crates/codex/src/populator/return_hints.rs`
+
+**Lines 297-321:**
+```rust
+fn collect_atomics(union: &TUnion, atomics: &mut Vec<TAtomic>) {
+    for atomic in union.types.iter() {
+        // Resolve TReference::Symbol to TObject::Named so the analyzer sees concrete object types
+        // instead of unresolved references (which display as "unknown-ref(ClassName)").
+        // This is needed because resolve_return_expression_hints runs before class-like type
+        // population, so property/method return types may still contain TReference::Symbol.
+        let resolved = match atomic {
+            TAtomic::Reference(TReference::Symbol { name, parameters, intersection_types }) => {
+                let mut named = TNamedObject::new(*name);
+                if let Some(params) = parameters {
+                    named = named.with_type_parameters(Some(params.clone()));
+                }
+                if let Some(intersections) = intersection_types {
+                    for it in intersections {
+                        named.add_intersection_type(it.clone());
+                    }
+                }
+                TAtomic::Object(TObject::Named(named))
+            }
+            other => other.clone(),
+        };
+        if !atomics.contains(&resolved) {
+            atomics.push(resolved);
+        }
+    }
+}
+```
+
+**Imports Added:**
+```rust
+use crate::ttype::TType;
+use crate::ttype::atomic::object::named::TNamedObject;
+```
+
+---
+
+## Impact
+
+### Before Fix
+- **PreparerService.php:** 23 issues (16 errors including multiple `unknown-ref` errors)
+- **Full Project:** 64 issues (27 errors)
+- Multiple `invalid-property-access` errors on XF types
+
+### After Fix
+- **PreparerService.php:** 0 issues ✅
+- **Full Project:** 41 issues (11 errors) - **16 fewer errors**
+- **Zero `unknown-ref` errors** ✅
+- **Zero `invalid-property-access` on XF types** ✅
+
+---
+
+## Why This Approach Works
+
+1. **Single Point of Resolution:** All resolved types flow through `collect_atomics()`, so one fix handles:
+    - Property access (`$this->property`)
+    - Method calls (`$this->method()`)
+    - Method chains (`$this->a()->b()->c()`)
+
+2. **Preserves Type Information:** Converts references while maintaining:
+    - Generic type parameters
+    - Intersection types
+    - Class names
+
+3. **No Pipeline Changes:** Doesn't require reordering the populate pipeline, which could have unintended side effects
+
+4. **Analysis-Time Solution:** Resolves types at the point they're used for return type inference, not earlier in the pipeline
+
+---
+
+## Files Modified
+
+**Single File Changed:**
+- `mago/crates/codex/src/populator/return_hints.rs`
+    - Modified `collect_atomics()` function (lines 297-321)
+    - Added 2 imports (lines 12, 14)
+
+**No Changes Needed To:**
+- Pipeline ordering
+- Property scanning
+- Method resolution
+- Analysis phase
+
+---
+
+## Testing
+
+### Build
+```bash
+cd /Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi/mago
+/Users/harutyun/.cargo/bin/cargo build
+```
+
+### Test Single File
+```bash
+cd /Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi
+./mago/target/debug/mago analyse upload/src/addons/BHW/OriginalityApi/XF/Service/Post/PreparerService.php
+```
+
+**Result:** ✅ No issues found
+
+### Test Full Project
+```bash
+./mago/target/debug/mago analyse
+```
+
+**Result:** ✅ Zero `unknown-ref` errors, 16 fewer errors overall
+
+---
+
+## Key Learnings
+
+1. **TReference vs TObject:** `TReference::Symbol` is an unresolved reference that displays as `unknown-ref(ClassName)`. It must be converted to `TObject::Named` for the analyzer to recognize it as an object type.
+
+2. **Pipeline Timing:** Understanding when different phases run is critical. Our hint resolution runs before type population, so we must handle unresolved references ourselves.
+
+3. **Funnel Points:** Finding the single point where all data flows through (like `collect_atomics()`) allows fixing multiple issues with one change.
+
+4. **Type Preservation:** When converting types, preserve all metadata (generics, intersections) to maintain type safety.
+
+---
+
+## Related Documentation
+
+- Original implementation guide: `RETURN_TYPE_INFERENCE_IMPLEMENTATION.md`
+- Previous work output: `PMOMPT.md` (deleted after completion)
+- Code improvements: `../CODE_IMPROVEMENTS.md`
+
+---
+
+## Verification Commands
+
+```bash
+# Check for any remaining unknown-ref errors
+./mago/target/debug/mago analyse 2>&1 | grep "unknown-ref"
+
+# Check for invalid-property-access on XF types
+./mago/target/debug/mago analyse 2>&1 | grep "invalid-property-access.*XF"
+
+# Full analysis
+./mago/target/debug/mago analyse
+```
+
+All should return zero results for type inference issues with XF classes.
