@@ -594,6 +594,10 @@ fn resolve_special_class_names(object: &mut TObject, codebase: &CodebaseMetadata
                 named.name = parent;
             }
         }
+        // A named class with `is_this = true` means the method inferred `return $this` in the
+        // declaring class context. When the method is called on a subclass, resolve the type to
+        // the concrete (static) class, just like an explicit `$this` return.
+        _ if named.is_this => resolve_static_type(named, was_this, false, codebase, options),
         _ if named.is_static => resolve_static_type(named, was_this, true, codebase, options),
         _ => {}
     }

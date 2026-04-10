@@ -311,10 +311,14 @@ pub fn resolve_method_from_object<'ctx, 'ast, 'arena>(
         let declaring_class_metadata =
             context.codebase.get_class_like(&declaring_method_id.get_class_name()).unwrap_or(metadata);
 
+        // `collect` expects (template-defining class, concrete/static class).
+        // `declaring_class_metadata` is the class that defines the template (e.g. Finder<T>);
+        // `metadata` is the actual object's class (e.g. ScanResultFinder), which holds
+        // `template_extended_parameters` mapping the parent's T to a concrete type.
         let class_template_parameters = super::class_template_type_collector::collect(
             context.codebase,
-            metadata,
             declaring_class_metadata,
+            metadata,
             Some(object_type),
         );
 
