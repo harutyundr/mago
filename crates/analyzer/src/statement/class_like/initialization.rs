@@ -617,6 +617,7 @@ where
             // the parent being checked (e.g., constructor inherited from a grandparent).
             let constructor_declaring_class = *constructor_method_id.get_class_name();
             let method_key = (constructor_declaring_class, word("__construct"));
+=======
             let constructor_initialized = artifacts.method_initialized_properties.get(&method_key);
 
             let all_initialized = uninitialized_properties.iter().all(|(prop_name, _)| {
