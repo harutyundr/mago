@@ -333,6 +333,94 @@ Property names in hints were lowercased via `ascii_lowercase_atom()`, but proper
 
 ---
 
+## Syncing with Upstream (Rebase Workflow)
+
+This repo is a fork of `carthage-software/mago`. The `upstream` remote is configured; run this once if it's missing:
+
+```bash
+git remote add upstream git@github.com:carthage-software/mago.git
+```
+
+### Full sync + rebase
+
+```bash
+# 1. Fetch latest from upstream
+git fetch upstream
+
+# 2. Fast-forward fork's main (must be a clean fast-forward — we never commit directly to main)
+git checkout main
+git merge --ff-only upstream/main
+
+# 3. Push updated main to fork
+git push origin main
+
+# 4. Rebase feature branch on top of updated main
+git checkout feature/type-inference-enhancement
+git rebase main
+```
+
+### Resolving conflicts during rebase
+
+Conflicts arise when upstream touched the same lines as our commits. For each conflicted file:
+
+1. Open the file and find `<<<<<<<` markers
+2. Understand what each side does — **keep both** if they're independent additions
+3. Resolve, then:
+   ```bash
+   git add <file>
+   git rebase --continue
+   ```
+
+**Common conflict areas** in this branch:
+- `crates/codex/src/scanner/function_like.rs` — we add return type inference; upstream adds flags/checks in the same function
+- `crates/analyzer/src/statement/class_like/initialization.rs` — our constructor fix; upstream changes API signatures
+
+**API changes to watch for**: `get_class_name()` return type, `declaring_property_ids` key type — upstream may change these between versions. If you get type errors after resolving conflicts, check whether method return types changed.
+
+### After rebase
+
+```bash
+# Fix any compile errors from API changes, commit them
+cargo build
+
+# Push — force-with-lease is required after a rebase; it fails safely if someone else pushed
+git push --force-with-lease origin feature/type-inference-enhancement
+
+# Regenerate the patch file (see Patch File section below)
+
+# Run regression verification (see section below)
+```
+
+---
+
+## Patch File
+
+All changes between `main` and the feature branch are exported as a single diff and stored outside the repo so they can be applied to fresh upstream checkouts (e.g. devbox instances).
+
+**Location**: `/Users/harutyun/devbox/patches/type-inferrence.diff`
+
+### Regenerate after every rebase or new commit
+
+```bash
+git diff main..feature/type-inference-enhancement > /Users/harutyun/devbox/patches/type-inferrence.diff
+```
+
+### Apply to a fresh checkout
+
+```bash
+git apply /Users/harutyun/devbox/patches/type-inferrence.diff
+```
+
+### New warnings from upstream rules
+
+When upstream adds new linter/analyzer rules, they may flag existing code. If the warning is in XF framework code (unfixable from our side), add it to the baseline in the test project:
+
+`/Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi/.mago-analyzer-baseline.toml`
+
+Do **not** add warnings that are in our own addon code — fix those instead.
+
+---
+
 ## Regression Verification
 
 Run this after every feature addition, upstream merge, or refactor. The baseline is **0 issues** (2 known `missing-return-type` entries are suppressed in `.mago-analyzer-baseline.toml`).
