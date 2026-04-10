@@ -333,12 +333,52 @@ Property names in hints were lowercased via `ascii_lowercase_atom()`, but proper
 
 ---
 
-## Testing
+## Regression Verification
 
-Build in debug mode (much faster than release):
+Run this after every feature addition, upstream merge, or refactor. The baseline is **0 issues** (2 known `missing-return-type` entries are suppressed in `.mago-analyzer-baseline.toml`).
+
+### Step 1 — Build
+
 ```bash
 cargo build
 ```
+
+Must compile with zero errors. Warnings are acceptable.
+
+### Step 2 — Full Analysis
+
+```bash
+./target/debug/mago --workspace /Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi analyse
+```
+
+Expected output ends with:
+```
+Filtered out 2 issues based on the baseline file.
+No issues found.
+```
+
+Any output other than this is a regression.
+
+### Step 3 — Check Specific Error Categories
+
+These are the error types that were previously caused by broken type inference. If any appear, it means type inference regressed:
+
+```bash
+# Should print nothing
+./target/debug/mago --workspace /Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi analyse 2>&1 | grep -E "unknown-ref|invalid-property-access|mixed-method-access|mixed-argument"
+```
+
+### Baseline Files
+
+Located in the test project (not in this repo):
+- `/Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi/.mago-analyzer-baseline.toml` — 2 suppressed `missing-return-type` issues in generated base classes
+- `/Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi/.mago-linter-baseline.toml` — empty
+
+Do **not** add new entries to the baseline to hide regressions. Fix the root cause instead.
+
+---
+
+## Testing
 
 Test specific file:
 ```bash
