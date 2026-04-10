@@ -337,28 +337,26 @@ Property names in hints were lowercased via `ascii_lowercase_atom()`, but proper
 
 Build in debug mode (much faster than release):
 ```bash
-cd /Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi/mago
 cargo build
 ```
 
 Test specific file:
 ```bash
-cd /Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi
-./mago/target/debug/mago analyse upload/src/addons/BHW/OriginalityApi/XF/Service/Post/PreparerService.php
+./target/debug/mago --workspace /Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi analyse upload/src/addons/BHW/OriginalityApi/XF/Service/Post/PreparerService.php
 ```
 
 Test full project:
 ```bash
-./mago/target/debug/mago analyse
+./target/debug/mago --workspace /Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi analyse
 ```
 
 Verification commands:
 ```bash
 # Check for any remaining unknown-ref errors
-./mago/target/debug/mago analyse 2>&1 | grep "unknown-ref"
+./target/debug/mago --workspace /Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi analyse 2>&1 | grep "unknown-ref"
 
 # Check for invalid-property-access on XF types
-./mago/target/debug/mago analyse 2>&1 | grep "invalid-property-access.*XF"
+./target/debug/mago --workspace /Users/harutyun/Projects/XenForo2/BHW/BHW_OriginalityApi analyse 2>&1 | grep "invalid-property-access.*XF"
 ```
 
 ### Specific Test Cases
