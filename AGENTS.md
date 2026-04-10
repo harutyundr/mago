@@ -317,6 +317,30 @@ Property names in hints were lowercased via `ascii_lowercase_atom()`, but proper
 
 **Cumulative impact**: 41 issues (11 errors) → 13 issues (3 errors, 10 warnings) — 28 fewer issues, zero regressions.
 
+### Apr 10, 2026 — Generic Template Resolution for `$this`-Returning Methods on Subclasses
+
+**Symptom**: `non-documented-property` on `XF\Mvc\Entity\Entity` for properties that exist on a concrete entity subclass (e.g., `$fake_score`, `$response_code`). Example code:
+
+```php
+$found = \XF::finder(ScanResultFinder::class)->where(...)->fetchOne();
+$found->fake_score;  // warned: property on Entity, not ScanResult
+```
+
+**Root cause (two bugs)**:
+
+1. **Wrong argument order in `class_template_type_collector::collect()`** (`method.rs`):  
+   The call was passing `metadata` (ScanResultFinder) as `class_metadata` and `declaring_class_metadata` (Finder) as `static_class_metadata`. `collect()` immediately returns `None` when `class_metadata.template_types.is_empty()` — ScanResultFinder has no `@template`, so the lookup was abandoned before checking `Finder`'s template bindings.
+
+2. **`is_this = true` flag not handled in the expander** (`expander.rs`):  
+   `return $this` in a method (e.g., `Finder::where()`) is stored as `TObject::Named { name: finder, is_this: true }`. The expander's match only resolved literal `"static"` / `"$this"` names. A concrete class name with `is_this = true` fell through to `_ => {}`, so calling `->where()` on `ScanResultFinder` always returned `Finder`, not `ScanResultFinder`. This meant `->fetchOne()` ran on `Finder`, making `class_metadata.name == static_class_metadata.name` and T resolved to `Entity` (constraint).
+
+**Fixes**:
+
+- `crates/analyzer/src/resolver/method.rs` ~line 316: swapped `declaring_class_metadata` and `metadata` in the `collect()` call.
+- `crates/codex/src/ttype/expander.rs` `expand_named_object()`: added `_ if named.is_this => resolve_static_type(named, was_this, false, codebase, options)` arm before `_ if named.is_static`.
+
+**Impact**: `$found` (from `Finder<ScanResult>::fetchOne()`) now correctly resolves to `ScanResult|null`. Zero `non-documented-property` warnings in BHW_OriginalityApi.
+
 ---
 
 ## Files Modified
@@ -330,6 +354,8 @@ Property names in hints were lowercased via `ascii_lowercase_atom()`, but proper
 | `mago/crates/codex/src/populator/mod.rs` | Integration point |
 | `mago/crates/codex/src/scanner/property.rs` | Property inference from defaults |
 | `mago/crates/codex/src/scanner/class_like.rs` | Enum method constructors |
+| `mago/crates/codex/src/ttype/expander.rs` | Fix `is_this` resolution for subclass method calls |
+| `mago/crates/analyzer/src/resolver/method.rs` | Fix argument order in `class_template_type_collector::collect()` |
 
 ---
 
@@ -402,7 +428,7 @@ All changes between `main` and the feature branch are exported as a single diff 
 ### Regenerate after every rebase or new commit
 
 ```bash
-git diff main..feature/type-inference-enhancement > /Users/harutyun/devbox/patches/type-inferrence.diff
+git diff main..feature/type-inference-enhancement -- ':!AGENTS.md' > /Users/harutyun/devbox/patches/type-inferrence.diff
 ```
 
 ### Apply to a fresh checkout
@@ -515,6 +541,8 @@ Verification commands:
 8. **Funnel points**: `collect_atomics()` is the single point where resolved types flow — fixing it handles property access, method calls, and chains
 9. **TReference vs TObject**: `TReference::Symbol` is unresolved (`unknown-ref(X)`); must convert to `TObject::Named` when assembling results
 10. **Pipeline timing**: Understand when each phase runs; hint resolution precedes type population, so handle unresolved references manually
+11. **`is_this` vs `is_static` flags**: `TNamedObject::is_this = true` means the value was inferred from `return $this`. The expander must handle both the `is_static` case (explicit `static` return) AND the `is_this` case (inferred `$this` return). Missing the `is_this` case causes the concrete class to not propagate through method chains.
+12. **`collect()` argument order**: `class_template_type_collector::collect(class_with_template, concrete_class, ...)` — first arg is the DECLARING class (has `@template`), second is the CONCRETE class (has `template_extended_parameters` with the bindings). Getting these backwards causes `collect()` to return `None` immediately because the concrete subclass has no `@template`.
 
 ---
 
