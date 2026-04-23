@@ -503,6 +503,10 @@ pub(super) fn infer_with_constants<'arena>(
         Expression::Array(Array { elements, .. }) | Expression::LegacyArray(LegacyArray { elements, .. })
             if is_list_array_expression(expression) =>
         {
+            if elements.is_empty() {
+                return Some(get_mixed_keyed_array());
+            }
+
             let mut entries = BTreeMap::new();
 
             for (i, element) in elements.iter().enumerate() {

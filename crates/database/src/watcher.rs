@@ -168,6 +168,11 @@ impl<'a> DatabaseWatcher<'a> {
 
         let mut watched_paths = Vec::new();
         for path in unique_watch_paths {
+            if !path.exists() {
+                tracing::debug!("Skipping non-existent watch path: {}", path.display());
+                continue;
+            }
+
             watcher.watch(&path, RecursiveMode::Recursive).map_err(DatabaseError::WatcherWatch)?;
             watched_paths.push(path.clone());
             tracing::debug!("Watching path: {}", path.display());

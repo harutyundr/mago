@@ -18,6 +18,7 @@ mod hierarchy;
 mod merge;
 mod methods;
 mod properties;
+mod return_hints;
 mod signatures;
 mod sorter;
 mod templates;
@@ -214,6 +215,9 @@ fn populate_codebase_inner(
             );
         }
     }
+
+    // Resolve return expression hints (method call inference) after signatures are populated
+    return_hints::resolve_return_expression_hints(codebase);
 
     if let Some(_dirty) = &dirty_symbols {
         for class_name in &class_likes_to_repopulate {

@@ -138,6 +138,33 @@ pub struct FunctionLikeMetadata {
     pub has_docblock: bool,
 
     pub flags: MetadataFlags,
+
+    /// Whether the function body calls `func_get_args()`, `func_get_arg()`, or `func_num_args()`.
+    /// When true, the function implicitly accepts variadic arguments even if the signature
+    /// does not declare them.
+    #[serde(default)]
+    pub uses_func_get_args: bool,
+
+    /// Hints about return expressions that could not be resolved during scanning.
+    /// These are resolved during the population phase when the full codebase is available.
+    #[serde(default)]
+    pub return_expression_hints: Vec<ReturnExpressionHint>,
+}
+
+/// A simplified representation of a return expression that can be resolved after scanning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReturnExpressionHint {
+    /// `return $this->method(...);`
+    InstanceMethodCall { class: Atom, method: Atom },
+    /// `return static::method(...)` or `return self::method(...)`
+    StaticMethodCall { class: Atom, method: Atom },
+    /// `return globalFunction(...);`
+    FunctionCall { function: Atom },
+    /// A chain of method calls: `return $this->a()->b()->c();`
+    /// Stored as (class_of_first_receiver, [method1, method2, ...])
+    MethodChain { receiver_class: Atom, methods: Box<[Atom]> },
+    /// `return $this->property;` or indirectly via `$var = $this->property; return $var;`
+    PropertyAccess { class: Atom, property: Atom },
 }
 
 impl FunctionLikeKind {
@@ -196,7 +223,9 @@ impl FunctionLikeMetadata {
             if_true_assertions: BTreeMap::new(),
             if_false_assertions: BTreeMap::new(),
             has_docblock: false,
+            uses_func_get_args: false,
             issues: vec![],
+            return_expression_hints: vec![],
         }
     }
 
