@@ -271,7 +271,7 @@ fn resolve_property_type(
                 return Some(type_meta.type_union.clone());
             }
         }
-        
+
         for parent_class in &class_meta.all_parent_classes {
             if let Some(parent_meta) = codebase.class_likes.get(parent_class) {
                 if let Some(prop_meta) = parent_meta.properties.get(&property) {
@@ -281,7 +281,7 @@ fn resolve_property_type(
                 }
             }
         }
-        
+
         for trait_name in &class_meta.used_traits {
             if let Some(trait_meta) = codebase.class_likes.get(trait_name) {
                 if let Some(prop_meta) = trait_meta.properties.get(&property) {
@@ -292,7 +292,7 @@ fn resolve_property_type(
             }
         }
     }
-    
+
     None
 }
 
