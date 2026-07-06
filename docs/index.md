@@ -137,6 +137,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash
 <a href="https://performingdigital.com" title="Giorgio Pogliani" target="_blank" rel="noopener" class="sponsor-card sponsor-supporter"><img src="https://avatars.githubusercontent.com/u/28866565?v=4&s=48" alt="Giorgio Pogliani"><span>Giorgio Pogliani</span></a>
 <a href="http://yigit.dev" title="Yigit Cukuren" target="_blank" rel="noopener" class="sponsor-card sponsor-supporter"><img src="https://avatars.githubusercontent.com/u/42731194?u=bb0fb4e3635f7fcab7ff91ff4b311fd5a99cb009&v=4&s=48" alt="Yigit Cukuren"><span>Yigit Cukuren</span></a>
 <a href="https://github.com/Zuruuh" title="Zuruh" target="_blank" rel="noopener" class="sponsor-card sponsor-supporter"><img src="https://avatars.githubusercontent.com/u/77583853?u=568441a6191e891cf4c9f52c9c230c45930bed86&v=4&s=48" alt="Zuruh"><span>Zuruh</span></a>
+<a href="https://github.com/epic-64" title="William Raendchen" target="_blank" rel="noopener" class="sponsor-card sponsor-supporter"><img src="https://avatars.githubusercontent.com/u/105014007?u=5465621acdf48e9b81604bfe2c72be50a4d741dc&v=4&s=48" alt="William Raendchen"><span>William Raendchen</span></a>
 </div></div>
 
 <!-- SPONSORS_END -->
