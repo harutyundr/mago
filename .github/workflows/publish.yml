@@ -1,0 +1,231 @@
+name: Publish
+
+# Builds release binaries for all supported targets on native runners,
+# attaches them to a GitHub release, and publishes the multi-arch Linux
+# image to the devbox GitLab registry. See PUBLISHING.md for the flow.
+#
+# Triggers:
+#   - pushing a `v*` tag (scripts/update-upstream.sh --tag creates one)
+#   - manual dispatch from the Actions tab
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  meta:
+    name: extract version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: extract version
+        id: meta
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${VERSION}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+
+  test:
+    name: test (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-x86_64
+          cache-on-failure: true
+      - name: run tests
+        run: cargo test --workspace --locked --all-targets
+
+  build:
+    name: ${{ matrix.target }}
+    needs: meta
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux: static musl binaries, also shipped in the docker image
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          # macOS binaries for hosts that run mago directly
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          # Windows binary, release asset only
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          cache-on-failure: true
+
+      - name: install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          VERSION="${{ needs.meta.outputs.version }}"
+          TARGET="${{ matrix.target }}"
+          STAGING="$(mktemp -d)/mago-${VERSION}-${TARGET}"
+          mkdir -p "${STAGING}"
+          cp "target/${TARGET}/release/mago" "${STAGING}/"
+          cp README.md LICENSE-MIT LICENSE-APACHE "${STAGING}/"
+          tar czf "mago-${VERSION}-${TARGET}.tar.gz" -C "$(dirname "${STAGING}")" "$(basename "${STAGING}")"
+      - name: package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $VERSION = "${{ needs.meta.outputs.version }}"
+          $TARGET = "${{ matrix.target }}"
+          $staging = "mago-$VERSION-$TARGET"
+          New-Item -ItemType Directory -Path $staging | Out-Null
+          Copy-Item "target/$TARGET/release/mago.exe" $staging
+          Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $staging
+          Compress-Archive -Path $staging -DestinationPath "mago-$VERSION-$TARGET.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mago-${{ needs.meta.outputs.version }}-${{ matrix.target }}
+          path: |
+            mago-${{ needs.meta.outputs.version }}-*.tar.gz
+            mago-${{ needs.meta.outputs.version }}-*.zip
+          if-no-files-found: error
+
+  release:
+    name: create GitHub release
+    needs: [meta, build, test]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  docker:
+    name: build and push container image
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Registry destinations live in repository secrets: this file is public
+      # and must not disclose where images are published. Each slot is a full
+      # image reference including the registry host (REGISTRY_<n>_IMAGE) plus
+      # its REGISTRY_<n>_USER and REGISTRY_<n>_TOKEN credentials. Empty slots
+      # are skipped. Slot values are additionally masked in logs because the
+      # docker CLI prints pushed references; the push step also rewrites any
+      # occurrence of the reference or its host before printing output.
+      R1_IMAGE: ${{ secrets.REGISTRY_1_IMAGE }}
+      R1_USER: ${{ secrets.REGISTRY_1_USER }}
+      R1_TOKEN: ${{ secrets.REGISTRY_1_TOKEN }}
+      R2_IMAGE: ${{ secrets.REGISTRY_2_IMAGE }}
+      R2_USER: ${{ secrets.REGISTRY_2_USER }}
+      R2_TOKEN: ${{ secrets.REGISTRY_2_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mago-${{ needs.meta.outputs.version }}-x86_64-unknown-linux-musl
+          path: /tmp/x86_64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mago-${{ needs.meta.outputs.version }}-aarch64-unknown-linux-musl
+          path: /tmp/aarch64
+
+      - name: extract binaries
+        run: |
+          VERSION="${{ needs.meta.outputs.version }}"
+          tar xzf /tmp/x86_64/mago-${VERSION}-x86_64-unknown-linux-musl.tar.gz -C /tmp/x86_64 --strip-components=1
+          tar xzf /tmp/aarch64/mago-${VERSION}-aarch64-unknown-linux-musl.tar.gz -C /tmp/aarch64 --strip-components=1
+          chmod +x /tmp/x86_64/mago /tmp/aarch64/mago
+
+      - name: push image to configured registries
+        run: |
+          set -euo pipefail
+
+          TAG="${{ needs.meta.outputs.tag }}"
+          VERSION="${{ needs.meta.outputs.version }}"
+
+          # Rewrite the image reference and its host before any output is
+          # printed: the docker CLI echoes pushed references into its log.
+          sanitize() {
+            sed -e "s|${1//|/\\|}|<registry-image>|g" -e "s|${2//|/\\|}|<registry-host>|g" "$3"
+          }
+
+          publish_one() {
+            local idx="$1"
+            local image_var="R${idx}_IMAGE" user_var="R${idx}_USER" token_var="R${idx}_TOKEN"
+            local image="${!image_var:-}" user="${!user_var:-}" token="${!token_var:-}"
+            local log="/tmp/registry-${idx}.log"
+
+            if [ -z "$image" ]; then
+              echo "registry slot ${idx}: not configured, skipping"
+              return 0
+            fi
+            if [ -z "$user" ] || [ -z "$token" ]; then
+              echo "registry slot ${idx}: IMAGE is set but USER or TOKEN is missing" >&2
+              return 1
+            fi
+
+            local host="${image%%/*}"
+
+            printf '%s' "$token" | docker login "$host" -u "$user" --password-stdin > "$log" 2>&1 \
+              || { echo "registry slot ${idx}: login failed"; sanitize "$image" "$host" "$log" >&2; return 1; }
+
+            # --provenance=false: without it buildx exports an extra
+            # attestation manifest, and pushing that list to the GitLab
+            # registry races its child-manifest validation ("blob unknown
+            # to registry"). We don't consume attestations.
+            docker buildx build --provenance=false --push --platform linux/amd64 -f Dockerfile -t "${image}:${TAG}-amd64" /tmp/x86_64 > "$log" 2>&1 \
+              || { echo "registry slot ${idx}: amd64 push failed"; sanitize "$image" "$host" "$log" >&2; return 1; }
+
+            docker buildx build --provenance=false --push --platform linux/arm64 -f Dockerfile -t "${image}:${TAG}-arm64" /tmp/aarch64 > "$log" 2>&1 \
+              || { echo "registry slot ${idx}: arm64 push failed"; sanitize "$image" "$host" "$log" >&2; return 1; }
+
+            docker buildx imagetools create \
+              --tag "${image}:latest" \
+              --tag "${image}:${VERSION}" \
+              --tag "${image}:${TAG}" \
+              "${image}:${TAG}-amd64" "${image}:${TAG}-arm64" > "$log" 2>&1 \
+              || { echo "registry slot ${idx}: manifest creation failed"; sanitize "$image" "$host" "$log" >&2; return 1; }
+
+            docker logout "$host" > /dev/null 2>&1
+            echo "registry slot ${idx}: published ${VERSION} / ${TAG} (latest, version, pinned tags)"
+          }
+
+          # Registries are independent destinations: one failing does not
+          # stop the other, but either failure fails the job.
+          status=0
+          publish_one 1 || status=1
+          publish_one 2 || status=1
+          exit $status
