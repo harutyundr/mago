@@ -5,13 +5,14 @@ This fork publishes two kinds of artifacts on every release tag:
 - **Release assets** — prebuilt binaries for Linux (static musl), macOS, and
   Windows, attached to a GitHub release. Hosts install these directly; no Rust
   toolchain needed.
-- **Container image** — a multi-arch (`linux/amd64` + `linux/arm64`) image at
-  `registry.gitlab.com/xenreact/devbox/devbox/mago`, carrying the static musl
-  binaries. CI jobs use the image.
+- **Container image** — a multi-arch (`linux/amd64` + `linux/arm64`) image
+  carrying the static musl binaries, pushed to every registry configured in
+  the repository secrets. CI jobs use the image.
 
 The `Publish` workflow (`.github/workflows/publish.yml`) builds both from the
 `feature/type-inference-enhancement` branch, which is the single source of
-truth for the patches.
+truth for the patches. This repository is public, so the workflow file and
+this document deliberately do not name the destination registries.
 
 ## When to rebuild
 
@@ -33,7 +34,7 @@ so a rebuild after a rebase never collides with a previous tag.
 
 ## Image tags
 
-Each publish pushes three tags to `registry.gitlab.com/xenreact/devbox/devbox/mago`:
+Each publish pushes three tags to every configured registry:
 
 | Tag | Meaning |
 | --- | --- |
@@ -41,18 +42,34 @@ Each publish pushes three tags to `registry.gitlab.com/xenreact/devbox/devbox/ma
 | `<version>` | mago version from `Cargo.toml`, e.g. `1.24.0` |
 | `<version>-<sha>` | exact build, pinned |
 
+## Registry configuration (secrets)
+
+The workflow supports up to two registries; each is a repository secret
+triple on the fork. Empty slots are skipped, and one registry failing does
+not block the other.
+
+| Secret | Value |
+| --- | --- |
+| `REGISTRY_1_IMAGE` / `REGISTRY_2_IMAGE` | full image reference including the registry host, e.g. `<host>/<group>/<project>/<image>` |
+| `REGISTRY_1_USER` / `REGISTRY_2_USER` | registry login name |
+| `REGISTRY_1_TOKEN` / `REGISTRY_2_TOKEN` | registry password; a token with `write_registry` (or equivalent) scope |
+
+Pushed references are masked in CI logs (GitHub secret masking), and the
+workflow additionally rewrites the reference and host out of any captured
+tool output before printing it.
+
 ## Using the image in CI
 
 ```yaml
 mago:
-  image: registry.gitlab.com/xenreact/devbox/devbox/mago:latest
+  image: <image reference from REGISTRY_1_IMAGE>:latest
   script:
     - mago analyze
 ```
 
-The image is based on Alpine and contains only `mago` and `git`. The binary is
-statically linked (musl), so the image works on both amd64 and arm64 runners
-with no emulation.
+The image is based on Alpine and contains only `mago` and `git`. The binary
+is statically linked (musl), so the image works on both amd64 and arm64
+runners with no emulation.
 
 ## Extracting the binary from the image (Linux hosts)
 
@@ -60,19 +77,12 @@ The binary in the image is static, so it runs on any Linux once extracted —
 no glibc dependency:
 
 ```sh
-docker pull --platform linux/amd64 registry.gitlab.com/xenreact/devbox/devbox/mago:latest
-cid=$(docker create --platform linux/amd64 registry.gitlab.com/xenreact/devbox/devbox/mago:latest)
+IMAGE=<image reference from REGISTRY_1_IMAGE>
+docker pull --platform linux/amd64 "$IMAGE:latest"
+cid=$(docker create --platform linux/amd64 "$IMAGE:latest")
 docker cp "$cid":/usr/local/bin/mago ./mago && docker rm "$cid"
 ```
 
 macOS and Windows cannot run the Linux binaries from the image; install the
 matching release asset instead (`~/devbox/bin/install-mago.sh` does this
-automatically).
-
-## Required secrets
-
-The `docker` job pushes to GitLab using two repository secrets on the fork:
-
-- `GITLAB_REGISTRY_USER` — username for the token below
-- `GITLAB_REGISTRY_TOKEN` — a project access token on `xenreact/devbox/devbox`
-  with the `write_registry` scope
+automatically, and also offers `--source=image` on Linux hosts).
