@@ -202,10 +202,14 @@ jobs:
             printf '%s' "$token" | docker login "$host" -u "$user" --password-stdin > "$log" 2>&1 \
               || { echo "registry slot ${idx}: login failed"; sanitize "$image" "$host" "$log" >&2; return 1; }
 
-            docker buildx build --push --platform linux/amd64 -f Dockerfile -t "${image}:${TAG}-amd64" /tmp/x86_64 > "$log" 2>&1 \
+            # --provenance=false: without it buildx exports an extra
+            # attestation manifest, and pushing that list to the GitLab
+            # registry races its child-manifest validation ("blob unknown
+            # to registry"). We don't consume attestations.
+            docker buildx build --provenance=false --push --platform linux/amd64 -f Dockerfile -t "${image}:${TAG}-amd64" /tmp/x86_64 > "$log" 2>&1 \
               || { echo "registry slot ${idx}: amd64 push failed"; sanitize "$image" "$host" "$log" >&2; return 1; }
 
-            docker buildx build --push --platform linux/arm64 -f Dockerfile -t "${image}:${TAG}-arm64" /tmp/aarch64 > "$log" 2>&1 \
+            docker buildx build --provenance=false --push --platform linux/arm64 -f Dockerfile -t "${image}:${TAG}-arm64" /tmp/aarch64 > "$log" 2>&1 \
               || { echo "registry slot ${idx}: arm64 push failed"; sanitize "$image" "$host" "$log" >&2; return 1; }
 
             docker buildx imagetools create \
