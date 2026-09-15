@@ -171,29 +171,30 @@ pub struct FunctionLikeMetadata {
     /// Whether the function body calls `func_get_args()`, `func_get_arg()`, or `func_num_args()`.
     /// When true, the function implicitly accepts variadic arguments even if the signature
     /// does not declare them.
-    #[serde(default)]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub uses_func_get_args: bool,
 
     /// Hints about return expressions that could not be resolved during scanning.
     /// These are resolved during the population phase when the full codebase is available.
-    #[serde(default)]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub return_expression_hints: Vec<ReturnExpressionHint>,
 }
 
 /// A simplified representation of a return expression that can be resolved after scanning.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ReturnExpressionHint {
     /// `return $this->method(...);`
-    InstanceMethodCall { class: Atom, method: Atom },
+    InstanceMethodCall { class: Word, method: Word },
     /// `return static::method(...)` or `return self::method(...)`
-    StaticMethodCall { class: Atom, method: Atom },
+    StaticMethodCall { class: Word, method: Word },
     /// `return globalFunction(...);`
-    FunctionCall { function: Atom },
+    FunctionCall { function: Word },
     /// A chain of method calls: `return $this->a()->b()->c();`
     /// Stored as (class_of_first_receiver, [method1, method2, ...])
-    MethodChain { receiver_class: Atom, methods: Box<[Atom]> },
+    MethodChain { receiver_class: Word, methods: Box<[Word]> },
     /// `return $this->property;` or indirectly via `$var = $this->property; return $var;`
-    PropertyAccess { class: Atom, property: Atom },
+    PropertyAccess { class: Word, property: Word },
 }
 
 impl FunctionLikeKind {

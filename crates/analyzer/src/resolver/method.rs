@@ -455,25 +455,14 @@ where
         let declaring_class_metadata =
             context.codebase.get_class_like(declaring_method_id.get_class_name().as_bytes()).unwrap_or(metadata);
 
-<<<<<<< HEAD
         // Collect class-template bounds from the object the method was found on:
         // for `@mixin`-resolved methods that is the mixin object, whose parameters
         // instantiate `metadata`'s templates; the receiver's parameters do not.
-=======
-        // `collect` expects (template-defining class, concrete/static class).
-        // `declaring_class_metadata` is the class that defines the template (e.g. Finder<T>);
-        // `metadata` is the actual object's class (e.g. ScanResultFinder), which holds
-        // `template_extended_parameters` mapping the parent's T to a concrete type.
->>>>>>> f32c22db3 (Fix generic type resolution for $this-returning methods called on subclasses)
         let class_template_parameters = super::class_template_type_collector::collect(
             context.codebase,
-            declaring_class_metadata,
-<<<<<<< HEAD
-            Some(&object),
-=======
             metadata,
-            Some(object_type),
->>>>>>> f32c22db3 (Fix generic type resolution for $this-returning methods called on subclasses)
+            declaring_class_metadata,
+            Some(&object),
         );
 
         if let Some(class_template_parameters) = class_template_parameters {

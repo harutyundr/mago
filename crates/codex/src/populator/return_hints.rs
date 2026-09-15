@@ -2,14 +2,13 @@ use std::collections::HashSet;
 
 use std::borrow::Cow;
 
-use mago_atom::Atom;
-use mago_atom::ascii_lowercase_atom;
-use mago_atom::empty_atom;
+use mago_word::Word;
+use mago_word::ascii_lowercase_word;
+use mago_word::empty_word;
 
 use crate::metadata::CodebaseMetadata;
 use crate::metadata::function_like::ReturnExpressionHint;
 use crate::metadata::ttype::TypeMetadata;
-use crate::ttype::TType;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::object::TObject;
 use crate::ttype::atomic::object::named::TNamedObject;
@@ -17,7 +16,7 @@ use crate::ttype::atomic::reference::TReference;
 use crate::ttype::union::TUnion;
 
 pub fn resolve_return_expression_hints(codebase: &mut CodebaseMetadata) {
-    let keys_with_hints: Vec<(Atom, Atom)> = codebase
+    let keys_with_hints: Vec<(Word, Word)> = codebase
         .function_likes
         .iter()
         .filter(|(_, meta)| !meta.return_expression_hints.is_empty() && meta.return_type_metadata.is_none())
@@ -51,7 +50,7 @@ pub fn resolve_return_expression_hints(codebase: &mut CodebaseMetadata) {
                 None => continue,
             };
 
-            let mut resolving: HashSet<(Atom, Atom)> = HashSet::new();
+            let mut resolving: HashSet<(Word, Word)> = HashSet::new();
             resolving.insert(*key);
 
             if let Some(resolved_type) = resolve_hints(&hints, codebase, &mut resolving) {
@@ -72,7 +71,7 @@ pub fn resolve_return_expression_hints(codebase: &mut CodebaseMetadata) {
 fn resolve_hints(
     hints: &[ReturnExpressionHint],
     codebase: &CodebaseMetadata,
-    resolving: &mut HashSet<(Atom, Atom)>,
+    resolving: &mut HashSet<(Word, Word)>,
 ) -> Option<TUnion> {
     let mut atomics: Vec<TAtomic> = Vec::new();
 
@@ -113,11 +112,11 @@ fn resolve_hints(
 }
 
 fn resolve_function_return(
-    function: Atom,
+    function: Word,
     codebase: &CodebaseMetadata,
-    resolving: &mut HashSet<(Atom, Atom)>,
+    resolving: &mut HashSet<(Word, Word)>,
 ) -> Option<TUnion> {
-    let key = (empty_atom(), function);
+    let key = (empty_word(), function);
     if resolving.contains(&key) {
         return None;
     }
@@ -134,10 +133,10 @@ fn resolve_function_return(
         }
     }
 
-    let fn_str = function.as_str();
-    if let Some(pos) = fn_str.rfind('\\') {
-        let short_name = ascii_lowercase_atom(&fn_str[pos + 1..]);
-        let short_key = (empty_atom(), short_name);
+    let fn_bytes = function.as_bytes();
+    if let Some(pos) = fn_bytes.iter().rposition(|&b| b == b'\\') {
+        let short_name = ascii_lowercase_word(&fn_bytes[pos + 1..]);
+        let short_key = (empty_word(), short_name);
         if !resolving.contains(&short_key) {
             if let Some(target_meta) = codebase.function_likes.get(&short_key) {
                 if let Some(return_type) = &target_meta.return_type_metadata {
@@ -157,10 +156,10 @@ fn resolve_function_return(
 }
 
 fn resolve_method_return(
-    class: Atom,
-    method: Atom,
+    class: Word,
+    method: Word,
     codebase: &CodebaseMetadata,
-    resolving: &mut HashSet<(Atom, Atom)>,
+    resolving: &mut HashSet<(Word, Word)>,
 ) -> Option<TUnion> {
     let key = (class, method);
     if resolving.contains(&key) {
@@ -226,10 +225,10 @@ fn resolve_method_return(
 }
 
 fn resolve_method_chain(
-    receiver_class: Atom,
-    methods: &[Atom],
+    receiver_class: Word,
+    methods: &[Word],
     codebase: &CodebaseMetadata,
-    resolving: &mut HashSet<(Atom, Atom)>,
+    resolving: &mut HashSet<(Word, Word)>,
 ) -> Option<TUnion> {
     if methods.is_empty() {
         return None;
@@ -261,8 +260,8 @@ fn resolve_method_chain(
 }
 
 fn resolve_property_type(
-    class: Atom,
-    property: Atom,
+    class: Word,
+    property: Word,
     codebase: &CodebaseMetadata,
 ) -> Option<TUnion> {
     if let Some(class_meta) = codebase.class_likes.get(&class) {
@@ -303,15 +302,13 @@ fn collect_atomics(union: &TUnion, atomics: &mut Vec<TAtomic>) {
         // This is needed because resolve_return_expression_hints runs before class-like type
         // population, so property/method return types may still contain TReference::Symbol.
         let resolved = match atomic {
-            TAtomic::Reference(TReference::Symbol { name, parameters, intersection_types }) => {
+            TAtomic::Reference(TReference::Symbol { name, parameters, intersection_types, .. }) => {
                 let mut named = TNamedObject::new(*name);
                 if let Some(params) = parameters {
                     named = named.with_type_parameters(Some(params.clone()));
                 }
                 if let Some(intersections) = intersection_types {
-                    for it in intersections {
-                        named.add_intersection_type(it.clone());
-                    }
+                    named.intersection_types = Some(intersections.clone());
                 }
                 TAtomic::Object(TObject::Named(named))
             }
@@ -323,21 +320,21 @@ fn collect_atomics(union: &TUnion, atomics: &mut Vec<TAtomic>) {
     }
 }
 
-fn extract_class_from_type(union: &TUnion, current_class: Atom) -> Option<Atom> {
+fn extract_class_from_type(union: &TUnion, current_class: Word) -> Option<Word> {
     for atomic in union.types.iter() {
         match atomic {
             TAtomic::Object(TObject::Named(named)) => {
                 if named.is_this {
                     return Some(current_class);
                 }
-                return Some(ascii_lowercase_atom(&named.name));
+                return Some(ascii_lowercase_word(named.name.as_bytes()));
             }
             TAtomic::Reference(TReference::Symbol {
                 name,
                 intersection_types: None,
                 ..
             }) => {
-                return Some(ascii_lowercase_atom(name));
+                return Some(ascii_lowercase_word(name.as_bytes()));
             }
             _ => continue,
         }

@@ -11,16 +11,28 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::cst::Access;
+use mago_syntax::cst::Argument;
 use mago_syntax::cst::ArrowFunction;
+use mago_syntax::cst::Assignment;
+use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::Block;
+use mago_syntax::cst::Call;
+use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Closure;
+use mago_syntax::cst::DirectVariable;
+use mago_syntax::cst::Expression;
+use mago_syntax::cst::ExpressionStatement;
 use mago_syntax::cst::ForBody;
 use mago_syntax::cst::ForeachBody;
 use mago_syntax::cst::Function;
+use mago_syntax::cst::Identifier;
 use mago_syntax::cst::IfBody;
+use mago_syntax::cst::Literal;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::ModifierSequenceExt;
+use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::SwitchBody;
 use mago_syntax::cst::SwitchCase;
@@ -34,22 +46,6 @@ use mago_word::ascii_lowercase_word;
 use mago_word::word;
 
 use std::borrow::Cow;
-
-use mago_syntax::ast::Access;
-use mago_syntax::ast::Argument;
-use mago_syntax::ast::Assignment;
-use mago_syntax::ast::AssignmentOperator;
-use mago_syntax::ast::Block;
-use mago_syntax::ast::Call;
-use mago_syntax::ast::ClassLikeMemberSelector;
-use mago_syntax::ast::DirectVariable;
-use mago_syntax::ast::Expression;
-use mago_syntax::ast::ExpressionStatement;
-use mago_syntax::ast::Identifier;
-use mago_syntax::ast::Literal;
-use mago_syntax::ast::PropertyAccess;
-use mago_syntax::ast::Statement;
-use mago_syntax::ast::Variable;
 
 use crate::metadata::function_like::ReturnExpressionHint;
 
@@ -1052,11 +1048,14 @@ fn collect_globals_from_statement(statement: &Statement, globals: &mut WordSet) 
 /// - `return null;`          → `null`
 ///
 /// Returns `None` if the block has no returns or any return expression is too complex.
-fn infer_return_type_from_block<'arena>(
-    block: &Block<'_>,
-    classname: Option<Atom>,
-    context: &Context<'_, 'arena>,
-) -> Option<TUnion> {
+fn infer_return_type_from_block<'ctx, 'arena, A>(
+    block: &'arena Block<'arena>,
+    classname: Option<Word>,
+    context: &Context<'ctx, 'arena, A>,
+) -> Option<TUnion>
+where
+    A: Arena,
+{
     let returns = utils::find_returns_in_block(block);
     if returns.is_empty() {
         return None;
@@ -1086,16 +1085,19 @@ fn infer_return_type_from_block<'arena>(
 }
 
 /// Maps a simple expression to a TAtomic type, or None if too complex.
-fn infer_atomic_from_expression<'arena>(
-    expr: &Expression<'_>,
-    classname: Option<Atom>,
-    context: &Context<'_, 'arena>,
-    block: Option<&Block<'_>>,
-) -> Option<TAtomic> {
+fn infer_atomic_from_expression<'ctx, 'arena, A>(
+    expr: &Expression<'arena>,
+    classname: Option<Word>,
+    context: &Context<'ctx, 'arena, A>,
+    block: Option<&'arena Block<'arena>>,
+) -> Option<TAtomic>
+where
+    A: Arena,
+{
     use crate::ttype::shared;
 
     match expr {
-        Expression::Variable(Variable::Direct(direct)) if direct.name.eq_ignore_ascii_case("$this") => {
+        Expression::Variable(Variable::Direct(direct)) if direct.name.eq_ignore_ascii_case(b"$this") => {
             let name = classname?;
             let mut named = TNamedObject::new(name);
             named.is_this = true;
@@ -1115,15 +1117,15 @@ fn infer_atomic_from_expression<'arena>(
             match &instantiation.class {
                 Expression::Identifier(Identifier::Local(local)) => {
                     let resolved_name = context.resolved_names.get(&local.span);
-                    let class_atom = atom(resolved_name);
+                    let class_atom = word(resolved_name);
                     Some(TAtomic::Object(TObject::Named(TNamedObject::new(class_atom))))
                 }
                 Expression::Identifier(Identifier::Qualified(qualified)) => {
-                    let class_atom = atom(qualified.value);
+                    let class_atom = word(qualified.value);
                     Some(TAtomic::Object(TObject::Named(TNamedObject::new(class_atom))))
                 }
                 Expression::Identifier(Identifier::FullyQualified(fully_qualified)) => {
-                    let class_atom = atom(fully_qualified.value);
+                    let class_atom = word(fully_qualified.value);
                     Some(TAtomic::Object(TObject::Named(TNamedObject::new(class_atom))))
                 }
                 _ => None,
@@ -1138,7 +1140,7 @@ fn infer_atomic_from_expression<'arena>(
 
 fn find_last_assignment_in_block<'a, 'arena>(
     block: &'a Block<'arena>,
-    var_name: &str,
+    var_name: &[u8],
 ) -> Option<&'a Expression<'arena>> {
     let mut last_rhs: Option<&'a Expression<'arena>> = None;
     for stmt in block.statements.iter() {
@@ -1161,11 +1163,14 @@ fn find_last_assignment_in_block<'a, 'arena>(
 
 /// Collects return expression hints from a method body for later resolution.
 /// These hints are used by the populator phase to infer return types from method calls.
-pub fn collect_return_expression_hints(
-    block: &mago_syntax::ast::Block<'_>,
-    current_classname: Option<Atom>,
-    context: &Context<'_, '_>,
-) -> Vec<ReturnExpressionHint> {
+pub fn collect_return_expression_hints<'ctx, 'arena, A>(
+    block: &'arena Block<'arena>,
+    current_classname: Option<Word>,
+    context: &Context<'ctx, 'arena, A>,
+) -> Vec<ReturnExpressionHint>
+where
+    A: Arena,
+{
     let returns = utils::find_returns_in_block(block);
     if returns.is_empty() {
         return vec![];
@@ -1189,28 +1194,31 @@ pub fn collect_return_expression_hints(
 }
 
 /// Extracts a return expression hint from a single return expression.
-fn extract_return_hint(
-    expr: &Expression<'_>,
-    current_classname: Option<Atom>,
-    context: &Context<'_, '_>,
-    block: Option<&Block<'_>>,
-) -> Option<ReturnExpressionHint> {
+fn extract_return_hint<'ctx, 'arena, A>(
+    expr: &Expression<'arena>,
+    current_classname: Option<Word>,
+    context: &Context<'ctx, 'arena, A>,
+    block: Option<&'arena Block<'arena>>,
+) -> Option<ReturnExpressionHint>
+where
+    A: Arena,
+{
     match expr {
-        Expression::Variable(Variable::Direct(direct)) if !direct.name.eq_ignore_ascii_case("$this") => {
+        Expression::Variable(Variable::Direct(direct)) if !direct.name.eq_ignore_ascii_case(b"$this") => {
             let block = block?;
             let assigned_expr = find_last_assignment_in_block(block, direct.name)?;
             extract_return_hint(assigned_expr, current_classname, context, None)
         }
         Expression::Access(Access::Property(PropertyAccess { object, property, .. })) => {
             if let Expression::Variable(Variable::Direct(DirectVariable { name, .. })) = object {
-                if name.eq_ignore_ascii_case("$this") {
+                if name.eq_ignore_ascii_case(b"$this") {
                     let class_name = current_classname?;
                     let property_name = match property {
                         ClassLikeMemberSelector::Identifier(ident) => {
                             // Property names in metadata include the '$' prefix.
-                            // Use atom() not ascii_lowercase_atom() because PHP property names are case-sensitive.
-                            let name_with_dollar = format!("${}", ident.value);
-                            atom(&name_with_dollar)
+                            // Use word() not ascii_lowercase_word() because PHP property names are case-sensitive.
+                            let name_with_dollar = format!("${}", String::from_utf8_lossy(ident.value));
+                            word(&name_with_dollar)
                         },
                         _ => return None,
                     };
@@ -1224,11 +1232,11 @@ fn extract_return_hint(
         }
         Expression::Call(Call::Method(method_call)) => {
             // Handle: return $this->method(...);
-            if let Expression::Variable(Variable::Direct(direct)) = &method_call.object {
-                if direct.name.eq_ignore_ascii_case("$this") {
+            if let Expression::Variable(Variable::Direct(direct)) = method_call.object {
+                if direct.name.eq_ignore_ascii_case(b"$this") {
                     let class_name = current_classname?;
                     let method_name = match &method_call.method {
-                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_word(ident.value),
                         _ => return None,
                     };
                     return Some(ReturnExpressionHint::InstanceMethodCall {
@@ -1240,9 +1248,9 @@ fn extract_return_hint(
 
             // Handle: return $this->a()->b()->c() or $obj->a()->b()
             // Try to extract a method chain starting from the receiver
-            if let Some((receiver_class, methods)) = extract_method_chain_from_expression(&method_call.object, current_classname, context) {
+            if let Some((receiver_class, methods)) = extract_method_chain_from_expression(method_call.object, current_classname, context) {
                 let method_name = match &method_call.method {
-                    ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                    ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_word(ident.value),
                     _ => return None,
                 };
                 let mut all_methods = methods;
@@ -1263,7 +1271,7 @@ fn extract_return_hint(
                 Expression::Static(_) => {
                     let class_name = current_classname?;
                     let method_name = match &static_call.method {
-                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_word(ident.value),
                         _ => return None,
                     };
                     (class_name, method_name)
@@ -1272,7 +1280,7 @@ fn extract_return_hint(
                 Expression::Self_(_) => {
                     let class_name = current_classname?;
                     let method_name = match &static_call.method {
-                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_word(ident.value),
                         _ => return None,
                     };
                     (class_name, method_name)
@@ -1281,7 +1289,7 @@ fn extract_return_hint(
                 Expression::Parent(_) => {
                     let class_name = current_classname?;
                     let method_name = match &static_call.method {
-                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_word(ident.value),
                         _ => return None,
                     };
                     (class_name, method_name)
@@ -1289,27 +1297,27 @@ fn extract_return_hint(
                 // ClassName::method()
                 Expression::Identifier(Identifier::Local(local)) => {
                     let resolved_name = context.resolved_names.get(&local.span);
-                    let class_atom = ascii_lowercase_atom(resolved_name);
+                    let class_atom = ascii_lowercase_word(resolved_name);
                     let method_name = match &static_call.method {
-                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_word(ident.value),
                         _ => return None,
                     };
                     (class_atom, method_name)
                 }
                 Expression::Identifier(Identifier::Qualified(qualified)) => {
-                    let class_atom = ascii_lowercase_atom(qualified.value);
+                    let class_atom = ascii_lowercase_word(qualified.value);
                     let method_name = match &static_call.method {
-                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_word(ident.value),
                         _ => return None,
                     };
                     (class_atom, method_name)
                 }
                 Expression::Identifier(Identifier::FullyQualified(fully_qualified)) => {
                     let value = fully_qualified.value;
-                    let stripped = if value.starts_with('\\') { &value[1..] } else { value };
-                    let class_atom = ascii_lowercase_atom(stripped);
+                    let stripped = if value.starts_with(b"\\") { &value[1..] } else { value };
+                    let class_atom = ascii_lowercase_word(stripped);
                     let method_name = match &static_call.method {
-                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                        ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_word(ident.value),
                         _ => return None,
                     };
                     (class_atom, method_name)
@@ -1327,18 +1335,18 @@ fn extract_return_hint(
             let function_name = match &function_call.function {
                 Expression::Identifier(Identifier::Local(local)) => {
                     let resolved_name = context.resolved_names.get(&local.span);
-                    let stripped = if resolved_name.starts_with('\\') { &resolved_name[1..] } else { resolved_name };
-                    ascii_lowercase_atom(stripped)
+                    let stripped = if resolved_name.starts_with(b"\\") { &resolved_name[1..] } else { resolved_name };
+                    ascii_lowercase_word(stripped)
                 }
                 Expression::Identifier(Identifier::Qualified(qualified)) => {
                     let value = qualified.value;
-                    let stripped = if value.starts_with('\\') { &value[1..] } else { value };
-                    ascii_lowercase_atom(stripped)
+                    let stripped = if value.starts_with(b"\\") { &value[1..] } else { value };
+                    ascii_lowercase_word(stripped)
                 }
                 Expression::Identifier(Identifier::FullyQualified(fully_qualified)) => {
                     let value = fully_qualified.value;
-                    let stripped = if value.starts_with('\\') { &value[1..] } else { value };
-                    ascii_lowercase_atom(stripped)
+                    let stripped = if value.starts_with(b"\\") { &value[1..] } else { value };
+                    ascii_lowercase_word(stripped)
                 }
                 _ => return None,
             };
@@ -1353,17 +1361,20 @@ fn extract_return_hint(
 
 /// Extracts a method chain from an expression, returning (starting_class, [methods]).
 /// For example, from `$this->a()->b()` returns (CurrentClass, ["a", "b"])
-fn extract_method_chain_from_expression(
-    expr: &Expression<'_>,
-    current_classname: Option<Atom>,
-    context: &Context<'_, '_>,
-) -> Option<(Atom, Vec<Atom>)> {
+fn extract_method_chain_from_expression<'ctx, 'arena, A>(
+    expr: &Expression<'arena>,
+    current_classname: Option<Word>,
+    context: &Context<'ctx, 'arena, A>,
+) -> Option<(Word, Vec<Word>)>
+where
+    A: Arena,
+{
     match expr {
         Expression::Call(Call::Method(method_call)) => {
             // Recursively extract from the receiver
-            if let Some((receiver_class, mut methods)) = extract_method_chain_from_expression(&method_call.object, current_classname, context) {
+            if let Some((receiver_class, mut methods)) = extract_method_chain_from_expression(method_call.object, current_classname, context) {
                 let method_name = match &method_call.method {
-                    ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_atom(ident.value),
+                    ClassLikeMemberSelector::Identifier(ident) => ascii_lowercase_word(ident.value),
                     _ => return None,
                 };
                 methods.push(method_name);
@@ -1388,21 +1399,21 @@ fn extract_method_chain_from_expression(
                 }
                 Expression::Identifier(Identifier::Local(local)) => {
                     let resolved_name = context.resolved_names.get(&local.span);
-                    (ascii_lowercase_atom(resolved_name), extract_method_name(&static_call.method)?)
+                    (ascii_lowercase_word(resolved_name), extract_method_name(&static_call.method)?)
                 }
                 Expression::Identifier(Identifier::Qualified(qualified)) => {
-                    (ascii_lowercase_atom(qualified.value), extract_method_name(&static_call.method)?)
+                    (ascii_lowercase_word(qualified.value), extract_method_name(&static_call.method)?)
                 }
                 Expression::Identifier(Identifier::FullyQualified(fully_qualified)) => {
                     let value = fully_qualified.value;
-                    let stripped = if value.starts_with('\\') { &value[1..] } else { value };
-                    (ascii_lowercase_atom(stripped), extract_method_name(&static_call.method)?)
+                    let stripped = if value.starts_with(b"\\") { &value[1..] } else { value };
+                    (ascii_lowercase_word(stripped), extract_method_name(&static_call.method)?)
                 }
                 _ => return None,
             };
             Some((class_name, vec![method_name]))
         }
-        Expression::Variable(Variable::Direct(direct)) if direct.name.eq_ignore_ascii_case("$this") => {
+        Expression::Variable(Variable::Direct(direct)) if direct.name.eq_ignore_ascii_case(b"$this") => {
             // $this is the receiver
             Some((current_classname?, vec![]))
         }
@@ -1410,9 +1421,9 @@ fn extract_method_chain_from_expression(
     }
 }
 
-fn extract_method_name(selector: &ClassLikeMemberSelector) -> Option<Atom> {
+fn extract_method_name(selector: &ClassLikeMemberSelector<'_>) -> Option<Word> {
     match selector {
-        ClassLikeMemberSelector::Identifier(ident) => Some(ascii_lowercase_atom(ident.value)),
+        ClassLikeMemberSelector::Identifier(ident) => Some(ascii_lowercase_word(ident.value)),
         _ => None,
     }
 }
@@ -1426,7 +1437,7 @@ fn argument_value<'a, 'arena>(arg: &'a Argument<'arena>) -> &'a Expression<'aren
 
 /// Check if a block contains calls to `func_get_args()`, `func_get_arg()`, or `func_num_args()`.
 /// These functions indicate the method implicitly accepts variadic arguments.
-fn block_has_func_get_args(block: &Block) -> bool {
+fn block_has_func_get_args(block: &Block<'_>) -> bool {
     for statement in &block.statements {
         if statement_has_func_get_args(statement) {
             return true;
@@ -1435,18 +1446,18 @@ fn block_has_func_get_args(block: &Block) -> bool {
     false
 }
 
-fn statement_has_func_get_args(statement: &Statement) -> bool {
+fn statement_has_func_get_args(statement: &Statement<'_>) -> bool {
     match statement {
         Statement::Expression(expr_stmt) => expression_has_func_get_args(expr_stmt.expression),
-        Statement::Return(ret) => ret.value.as_ref().is_some_and(|e| expression_has_func_get_args(e)),
+        Statement::Return(ret) => ret.value.is_some_and(|e| expression_has_func_get_args(e)),
         Statement::Block(block) => block_has_func_get_args(block),
         Statement::If(r#if) => match &r#if.body {
-            mago_syntax::ast::IfBody::Statement(body) => {
+            IfBody::Statement(body) => {
                 statement_has_func_get_args(body.statement)
                     || body.else_if_clauses.iter().any(|c| statement_has_func_get_args(c.statement))
                     || body.else_clause.as_ref().is_some_and(|c| statement_has_func_get_args(c.statement))
             }
-            mago_syntax::ast::IfBody::ColonDelimited(body) => {
+            IfBody::ColonDelimited(body) => {
                 body.statements.iter().any(statement_has_func_get_args)
                     || body.else_if_clauses.iter().any(|c| c.statements.iter().any(statement_has_func_get_args))
                     || body.else_clause.as_ref().is_some_and(|c| c.statements.iter().any(statement_has_func_get_args))
@@ -1458,21 +1469,25 @@ fn statement_has_func_get_args(statement: &Statement) -> bool {
                 || r#try.finally_clause.as_ref().is_some_and(|f| block_has_func_get_args(&f.block))
         }
         Statement::Foreach(foreach) => match &foreach.body {
-            mago_syntax::ast::ForeachBody::Statement(s) => statement_has_func_get_args(s),
-            mago_syntax::ast::ForeachBody::ColonDelimited(b) => b.statements.iter().any(statement_has_func_get_args),
+            ForeachBody::Statement(s) => statement_has_func_get_args(s),
+            ForeachBody::ColonDelimited(b) => b.statements.iter().any(statement_has_func_get_args),
         },
         _ => false,
     }
 }
 
-fn expression_has_func_get_args(expression: &Expression) -> bool {
+fn expression_has_func_get_args(expression: &Expression<'_>) -> bool {
     match expression {
         Expression::Call(Call::Function(func_call)) => {
             if let Expression::Identifier(ident) = func_call.function {
-                let name = ident.value();
-                if name.eq_ignore_ascii_case("func_get_args")
-                    || name.eq_ignore_ascii_case("func_get_arg")
-                    || name.eq_ignore_ascii_case("func_num_args")
+                let name = match ident {
+                    Identifier::Local(local) => local.value,
+                    Identifier::Qualified(qualified) => qualified.value,
+                    Identifier::FullyQualified(fully_qualified) => fully_qualified.value,
+                };
+                if name.eq_ignore_ascii_case(b"func_get_args")
+                    || name.eq_ignore_ascii_case(b"func_get_arg")
+                    || name.eq_ignore_ascii_case(b"func_num_args")
                 {
                     return true;
                 }
