@@ -52,7 +52,7 @@ not block the other.
 | --- | --- |
 | `REGISTRY_1_IMAGE` / `REGISTRY_2_IMAGE` | full image reference including the registry host, e.g. `<host>/<group>/<project>/<image>` |
 | `REGISTRY_1_USER` / `REGISTRY_2_USER` | registry login name |
-| `REGISTRY_1_TOKEN` / `REGISTRY_2_TOKEN` | registry password; a token with `write_registry` (or equivalent) scope |
+| `REGISTRY_1_TOKEN` / `REGISTRY_2_TOKEN` | registry password; a token with **both** `read_registry` and `write_registry` scopes. Read access is required even for pushing: the docker client runs pull-scoped existence checks on layers before uploading, so a write-only token gets `insufficient_scope` on every push (GitLab deploy tokens) |
 
 Pushed references are masked in CI logs (GitHub secret masking), and the
 workflow additionally rewrites the reference and host out of any captured
